@@ -1,6 +1,10 @@
 {
   "name": "zcatalyst-sdk-js",
   "version": "0.0.4",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/catalystbyzoho/zcatalyst-sdk-js.git"
+  },
   "scripts": {
     "clean": "turbo run clean --force --parallel",
     "build": "turbo run build",

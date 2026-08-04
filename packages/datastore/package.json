@@ -24,6 +24,11 @@
     }
   },
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/catalystbyzoho/zcatalyst-sdk-js.git",
+    "directory": "packages/datastore"
+  },
   "sideEffects": false,
   "scripts": {
     "build": "pnpm clean && concurrently 'pnpm:build:cjs' 'pnpm:build:es' 'pnpm:build:types && pnpm build:types:downlevel'",
