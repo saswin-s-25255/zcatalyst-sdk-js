@@ -8,6 +8,7 @@ import {
 	ICatalystGResponse,
 	isNonEmptyString,
 	isNonNullObject,
+	isURL,
 	ObjectHasProperties,
 	wrapValidatorsWithPromise
 } from '@zcatalyst/utils';
@@ -75,6 +76,42 @@ export class Connector {
 	private get _connectorName(): string {
 		return 'ZC_CONN_' + this.connectorName;
 	}
+
+	/**
+	 * Validates that a configured OAuth endpoint is a well-formed, HTTPS URL.
+	 * Plain HTTP is only permitted for loopback addresses, to allow local development
+	 * against a locally hosted OAuth provider.
+	 * @param url - The OAuth URL to validate.
+	 * @param fieldName - The name of the field being validated, used in error messages.
+	 * @throws {CatalystConnectorError} when the URL is missing, malformed, or insecure.
+	 */
+	#validateOAuthUrl(url: string, fieldName: string): void {
+		if (!isURL(url)) {
+			throw new CatalystConnectorError(
+				'INVALID_OAUTH_URL',
+				`The ${fieldName} must be a valid, absolute URL.`
+			);
+		}
+		let parsedUrl: URL;
+		try {
+			parsedUrl = new URL(url);
+		} catch {
+			throw new CatalystConnectorError(
+				'INVALID_OAUTH_URL',
+				`The ${fieldName} must be a valid, absolute URL.`
+			);
+		}
+		const isLoopbackHost =
+			parsedUrl.hostname === 'localhost' || parsedUrl.hostname === '127.0.0.1';
+		if (parsedUrl.protocol !== 'https:' && !isLoopbackHost) {
+			throw new CatalystConnectorError(
+				'INSECURE_OAUTH_URL',
+				`The ${fieldName} must use HTTPS. Plain HTTP is only permitted for local development ` +
+					`against loopback addresses (localhost/127.0.0.1).`
+			);
+		}
+	}
+
 	/**
 	 * Retrieves a valid access token, refreshing or reading from cache when needed.
 	 * @returns A promise that resolves to string.
@@ -140,6 +177,7 @@ export class Connector {
 			isNonEmptyString(code, 'grant_token', true);
 			isNonEmptyString(this.redirectUrl, REDIRECT_URL, true);
 		}, CatalystConnectorError);
+		this.#validateOAuthUrl(this.authUrl, AUTH_URL);
 		const request: IRequestConfig = {
 			method: REQ_METHOD.post,
 			url: this.authUrl,
@@ -150,7 +188,8 @@ export class Connector {
 				[CLIENT_SECRET]: this.clientSecret,
 				[REDIRECT_URL]: this.redirectUrl
 			},
-			service: CatalystService.BAAS
+			service: CatalystService.EXTERNAL,
+			auth: false
 		};
 		const resp = await this.requester.send(request);
 		const tokenObj = resp.data;
@@ -200,6 +239,7 @@ export class Connector {
 			isNonEmptyString(this.refreshToken, 'refresh_token', true);
 			isNonEmptyString(this.refreshUrl, 'refresh_url', true);
 		}, CatalystConnectorError);
+		this.#validateOAuthUrl(this.refreshUrl, REFRESH_URL);
 		const request: IRequestConfig = {
 			method: REQ_METHOD.post,
 			url: this.refreshUrl,
@@ -209,7 +249,8 @@ export class Connector {
 				[CLIENT_SECRET]: this.clientSecret,
 				[REFRESH_TOKEN]: this.refreshToken
 			},
-			service: CatalystService.BAAS
+			service: CatalystService.EXTERNAL,
+			auth: false
 		};
 		const resp = await this.requester.send(request);
 		const tokenObject = resp.data;
