@@ -11,8 +11,42 @@ export const URL_DIVIDER = {
 	AUTH: 'auth',
 	PUBLIC_SIGNUP: 'public-signup',
 	CHANGE_PASSWORD: 'change-password',
-	LOGIN: 'login'
+	LOGIN: 'login',
+	LOGIN_POPUP: 'login/popup',
+	LOGOUT_POPUP: 'logout/popup'
 };
+
+// ── Popup Auth Constants ───────────────────────────────────────────────────
+
+/** Full path to the popup sign-in page served by the Catalyst backend. */
+export const POPUP_LOGIN_PATH = `/__catalyst/auth/login/popup`;
+
+/** Full path to the popup sign-out page served by the Catalyst backend. */
+export const POPUP_LOGOUT_PATH = `/__catalyst/auth/logout/popup`;
+
+/** postMessage type sent by iframe → popup to request the auth token. */
+export const POPUP_MSG_AUTH_REQUEST = 'catalyst-auth-request';
+
+/** postMessage type sent by popup → iframe carrying the JWT token. */
+export const POPUP_MSG_AUTH_TOKEN = 'catalyst-auth-token';
+
+/** postMessage type sent by popup → iframe when sign-out is complete. */
+export const POPUP_MSG_SIGNOUT_DONE = 'catalyst-signout-done';
+
+/** postMessage type sent by popup → iframe when an error occurs. */
+export const POPUP_MSG_AUTH_ERROR = 'catalyst-auth-error';
+
+/** Polling interval (ms) for iframe → popup keep-alive requests. */
+export const POPUP_POLL_INTERVAL_MS = 500;
+
+/** Default popup sign-in timeout (ms): 5 minutes. */
+export const POPUP_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** Default popup window width in pixels. */
+export const POPUP_DEFAULT_WIDTH = 500;
+
+/** Default popup window height in pixels. */
+export const POPUP_DEFAULT_HEIGHT = 650;
 
 export const UM_QUERY_STRING = {
 	EMAIL_ID: 'emailId'

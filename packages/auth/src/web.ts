@@ -24,6 +24,16 @@ import {
 	CURRENT_CLIENT_PAGE_PORT,
 	CURRENT_CLIENT_PAGE_PROTOCOL,
 	FETCH_DETAILS_CALLBACK_FN,
+	POPUP_DEFAULT_HEIGHT,
+	POPUP_DEFAULT_TIMEOUT_MS,
+	POPUP_DEFAULT_WIDTH,
+	POPUP_LOGIN_PATH,
+	POPUP_LOGOUT_PATH,
+	POPUP_MSG_AUTH_ERROR,
+	POPUP_MSG_AUTH_REQUEST,
+	POPUP_MSG_AUTH_TOKEN,
+	POPUP_MSG_SIGNOUT_DONE,
+	POPUP_POLL_INTERVAL_MS,
 	UM_URL_DIVIDER,
 	URL_DIVIDER
 } from './utils/constants';
@@ -32,8 +42,11 @@ import { CatalystAuthenticationError } from './utils/error';
 import { wrapCheck } from './utils/functions';
 import {
 	ICatalystAuthResponse,
+	ICatalystPopupSignInConfig,
+	ICatalystPopupSignInResult,
 	ICatalystSignInConfig,
 	ICatalystSignUpConfig,
+	IPopupAuthOperation,
 	UserDetails
 } from './utils/interface';
 import { applyQueryString, hasSuffInfo } from './utils/validators';
@@ -655,8 +668,281 @@ class Authentication implements Component {
 		const resp = await this.requester.send(request);
 		return resp.data as unknown as string;
 	}
+
+	// ── Popup Auth ─────────────────────────────────────────────────────────────
+
+	/** Active popup auth operation — one at a time, like Firebase's PopupOperation. */
+	#popupAuthOperation: IPopupAuthOperation | null = null;
+	#popupPollInterval: ReturnType<typeof setInterval> | null = null;
+	#popupTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+	#popupMessageListener: ((event: MessageEvent) => void) | null = null;
+
+	/** Tears down all popup operation state after any outcome. */
+	#clearPopupOperation(status: IPopupAuthOperation['status'] = 'cancelled'): void {
+		if (this.#popupAuthOperation) {
+			this.#popupAuthOperation.status = status;
+			try {
+				if (this.#popupAuthOperation.popup && !this.#popupAuthOperation.popup.closed) {
+					this.#popupAuthOperation.popup.close();
+				}
+			} catch {
+				/* ignore cross-origin close errors */
+			}
+			this.#popupAuthOperation.popup = null;
+		}
+		if (this.#popupPollInterval !== null) {
+			clearInterval(this.#popupPollInterval);
+			this.#popupPollInterval = null;
+		}
+		if (this.#popupTimeoutHandle !== null) {
+			clearTimeout(this.#popupTimeoutHandle);
+			this.#popupTimeoutHandle = null;
+		}
+		if (this.#popupMessageListener !== null) {
+			window.removeEventListener('message', this.#popupMessageListener);
+			this.#popupMessageListener = null;
+		}
+		this.#popupAuthOperation = null;
+	}
+
+	/** Opens a centered popup window. Throws if the browser blocks it. */
+	#openPopupWindow(url: string, name: string, width: number, height: number): Window {
+		const left = Math.round(window.screenX + (window.outerWidth - width) / 2);
+		const top = Math.round(window.screenY + (window.outerHeight - height) / 2);
+		const features = [
+			`width=${width}`,
+			`height=${height}`,
+			`left=${left}`,
+			`top=${top}`,
+			'location=yes',
+			'resizable=yes',
+			'scrollbars=yes',
+			'status=yes',
+			'toolbar=no'
+		].join(',');
+		const popup = window.open(url, name, features);
+		if (!popup) {
+			throw new CatalystAuthenticationError(
+				'POPUP_BLOCKED',
+				'Popup was blocked by the browser. Please allow popups for this site and try again.'
+			);
+		}
+		return popup;
+	}
+
+	/**
+	 * Writes JWT tokens into browser cookies.
+	 * Uses CHIPS partitioned cookies (cookieStore API) when called from a
+	 * cross-origin iframe so tokens are sent on requests even with third-party
+	 * cookie restrictions. Falls back to document.cookie on top-level pages.
+	 */
+	async #setJwtCookies(token: string, expiresInSec: number): Promise<void> {
+		const isIframe = window.self !== window.top;
+		const maxAge = expiresInSec > 0 ? expiresInSec : 3600;
+		const cookieKeys = [JWT_COOKIE_PREFIX, 'JWT_AUTH_TOKEN'];
+		if (isIframe && 'cookieStore' in window) {
+			const cs = (window as unknown as { cookieStore: CookieStore }).cookieStore;
+			await Promise.all(
+				cookieKeys.map((key) =>
+					cs.set({
+						name: key,
+						value: token,
+						path: '/',
+						expires: Date.now() + maxAge * 1000,
+						secure: true,
+						sameSite: 'none',
+						partitioned: true
+					} as CookieInit)
+				)
+			);
+		} else {
+			cookieKeys.forEach((key) => {
+				document.cookie = `${key}=${token}; max-age=${maxAge}; path=/; secure; samesite=none`;
+			});
+		}
+	}
+
+	/** Clears JWT cookies (CHIPS partitioned in iframe, standard on top-level). */
+	async #clearJwtCookies(): Promise<void> {
+		const isIframe = window.self !== window.top;
+		const cookieKeys = [JWT_COOKIE_PREFIX, 'JWT_AUTH_TOKEN'];
+		if (isIframe && 'cookieStore' in window) {
+			const cs = (window as unknown as { cookieStore: CookieStore }).cookieStore;
+			await Promise.all(
+				cookieKeys.map((key) =>
+					cs.set({
+						name: key,
+						value: '',
+						path: '/',
+						expires: 0,
+						secure: true,
+						sameSite: 'none',
+						partitioned: true
+					} as CookieInit)
+				)
+			);
+		} else {
+			cookieKeys.forEach((key) => {
+				document.cookie = `${key}=; max-age=0; path=/`;
+			});
+		}
+		clearStratusJwt();
+	}
+
+	/**
+	 * Signs in via a secure popup. Opens `/__catalyst/auth/login/popup`.
+	 * The popup verifies the opener origin before generating any token.
+	 * @example const { user } = await zcAuth.signInViaPopup();
+	 */
+	async signInViaPopup(
+		config: ICatalystPopupSignInConfig = {}
+	): Promise<ICatalystPopupSignInResult> {
+		if (this.#popupAuthOperation && this.#popupAuthOperation.status === 'waiting') {
+			throw new CatalystAuthenticationError(
+				'POPUP_ALREADY_OPEN',
+				'A sign-in popup is already open.'
+			);
+		}
+		const width = config.width ?? POPUP_DEFAULT_WIDTH;
+		const height = config.height ?? POPUP_DEFAULT_HEIGHT;
+		const timeoutMs = config.timeoutMs ?? POPUP_DEFAULT_TIMEOUT_MS;
+		const eventId = crypto.randomUUID();
+		const popup = this.#openPopupWindow(
+			`${window.location.origin}${POPUP_LOGIN_PATH}`,
+			'catalystSignIn',
+			width,
+			height
+		);
+		this.#popupAuthOperation = { eventId, status: 'waiting', popup, createdAt: Date.now() };
+		return new Promise<ICatalystPopupSignInResult>((resolve, reject) => {
+			const onMessage = async (event: MessageEvent): Promise<void> => {
+				if (!this.#popupAuthOperation || this.#popupAuthOperation.status !== 'waiting')
+					return;
+				if (event.origin !== window.location.origin) return;
+				if (event.source !== this.#popupAuthOperation.popup) return;
+				if (!event.data) return;
+				if (event.data.type === POPUP_MSG_AUTH_ERROR) {
+					this.#clearPopupOperation('cancelled');
+					reject(
+						new CatalystAuthenticationError(
+							'POPUP_AUTH_ERROR',
+							event.data.message ?? 'Sign-in failed.'
+						)
+					);
+					return;
+				}
+				if (event.data.type !== POPUP_MSG_AUTH_TOKEN) return;
+				if (event.data.eventId !== this.#popupAuthOperation.eventId) return;
+				const token = event.data.access_token;
+				if (typeof token !== 'string' || !token || token.length > 10000) {
+					this.#clearPopupOperation('cancelled');
+					reject(new CatalystAuthenticationError('INVALID_TOKEN', 'Malformed token.'));
+					return;
+				}
+				this.#popupAuthOperation.status = 'completed';
+				this.#clearPopupOperation('completed');
+				try {
+					const exp =
+						typeof event.data.expires_in_sec === 'number' &&
+						isFinite(event.data.expires_in_sec) &&
+						event.data.expires_in_sec > 0 &&
+						event.data.expires_in_sec < 86400 * 30
+							? event.data.expires_in_sec
+							: 3600;
+					await this.#setJwtCookies(token, exp);
+					const userResp = await this.getProjectUserDetails();
+					resolve({ user: userResp.data ?? userResp, access_token: token });
+				} catch (err) {
+					reject(
+						new CatalystAuthenticationError(
+							'POST_AUTH_ERROR',
+							err instanceof Error ? err.message : String(err)
+						)
+					);
+				}
+			};
+			this.#popupMessageListener = onMessage;
+			window.addEventListener('message', onMessage);
+			this.#popupPollInterval = setInterval(() => {
+				if (!this.#popupAuthOperation || this.#popupAuthOperation.status !== 'waiting') {
+					this.#clearPopupOperation('cancelled');
+					return;
+				}
+				if (this.#popupAuthOperation.popup?.closed) {
+					this.#clearPopupOperation('cancelled');
+					reject(
+						new CatalystAuthenticationError(
+							'POPUP_CLOSED',
+							'Popup closed before auth completed.'
+						)
+					);
+					return;
+				}
+				try {
+					this.#popupAuthOperation.popup?.postMessage(
+						{ type: POPUP_MSG_AUTH_REQUEST, eventId: this.#popupAuthOperation.eventId },
+						window.location.origin
+					);
+				} catch {
+					/* suppress during Zoho Accounts cross-origin redirect */
+				}
+			}, POPUP_POLL_INTERVAL_MS);
+			this.#popupTimeoutHandle = setTimeout(() => {
+				if (this.#popupAuthOperation && this.#popupAuthOperation.status === 'waiting') {
+					this.#clearPopupOperation('expired');
+					reject(
+						new CatalystAuthenticationError(
+							'POPUP_TIMEOUT',
+							`Popup timed out after ${timeoutMs / 1000}s.`
+						)
+					);
+				}
+			}, timeoutMs);
+		});
+	}
+
+	/**
+	 * Signs out via a popup, fully invalidating the ADT/BDT server session.
+	 * Opens `/__catalyst/auth/logout/popup` to hit the Zoho accounts logout URL.
+	 * @example await zcAuth.signOutViaPopup();
+	 */
+	async signOutViaPopup(redirectUrl = '/'): Promise<void> {
+		const popup = this.#openPopupWindow(
+			`${window.location.origin}${POPUP_LOGOUT_PATH}`,
+			'catalystSignOut',
+			POPUP_DEFAULT_WIDTH,
+			POPUP_DEFAULT_HEIGHT
+		);
+		return new Promise<void>((resolve, reject) => {
+			const th = setTimeout(() => {
+				window.removeEventListener('message', onMsg);
+				try {
+					if (!popup.closed) popup.close();
+				} catch {
+					/**/
+				}
+				reject(new CatalystAuthenticationError('POPUP_TIMEOUT', 'Sign-out timed out.'));
+			}, POPUP_DEFAULT_TIMEOUT_MS);
+			const onMsg = async (event: MessageEvent): Promise<void> => {
+				if (event.origin !== window.location.origin) return;
+				if (event.source !== popup) return;
+				if (!event.data || event.data.type !== POPUP_MSG_SIGNOUT_DONE) return;
+				clearTimeout(th);
+				window.removeEventListener('message', onMsg);
+				try {
+					if (!popup.closed) popup.close();
+				} catch {
+					/**/
+				}
+				await this.#clearJwtCookies();
+				document.cookie = `user_cred=; max-age=0; path=/`;
+				if (redirectUrl) window.location.replace(redirectUrl);
+				resolve();
+			};
+			window.addEventListener('message', onMsg);
+		});
+	}
 }
-export { UserManagement } from './user-management';
 export * from './utils/constants';
 
 export const zcAuth = new Authentication();
@@ -667,4 +953,19 @@ declare global {
 			data?: Record<string, unknown>;
 		};
 	}
+}
+
+// ── CookieStore type shim ───────────────────────────────────────────────────
+// Not yet in all TypeScript lib definitions — minimal shim keeps the build clean.
+interface CookieInit {
+	name: string;
+	value: string;
+	path?: string;
+	expires?: number;
+	secure?: boolean;
+	sameSite?: 'strict' | 'lax' | 'none';
+	partitioned?: boolean;
+}
+interface CookieStore {
+	set(init: CookieInit): Promise<void>;
 }

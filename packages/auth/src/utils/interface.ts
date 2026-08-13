@@ -89,6 +89,45 @@ export interface ICatalystSignInConfig {
 	redirectUrl?: string;
 }
 
+// ── Popup Auth Interfaces ──────────────────────────────────────────────────
+
+/**
+ * Options for signInViaPopup().
+ */
+export interface ICatalystPopupSignInConfig {
+	/** Width of the popup window in pixels. Defaults to 500. */
+	width?: number;
+	/** Height of the popup window in pixels. Defaults to 650. */
+	height?: number;
+	/** Timeout in milliseconds to wait for the popup to respond. Defaults to 300000 (5 min). */
+	timeoutMs?: number;
+}
+
+/**
+ * Result returned by signInViaPopup() after a successful sign-in.
+ */
+export interface ICatalystPopupSignInResult {
+	/** The authenticated user details. */
+	user: unknown;
+	/** The raw JWT access token set as a cookie. */
+	access_token: string;
+}
+
+/**
+ * Internal state object tracking a single popup auth operation.
+ * Mirrors Firebase's PopupOperation pattern.
+ */
+export interface IPopupAuthOperation {
+	/** Unique transaction ID generated per login attempt (like Firebase's eventId). */
+	eventId: string;
+	/** Status of the current operation. */
+	status: 'waiting' | 'completed' | 'cancelled' | 'expired';
+	/** Reference to the opened popup window. */
+	popup: Window | null;
+	/** Timestamp when the operation was created. */
+	createdAt: number;
+}
+
 export interface ICatalystAuthResponse {
 	status: number;
 	message?: string;
