@@ -326,12 +326,20 @@ class Authentication implements Component {
 	 * ```
 	 */
 	async signOut(redirectURL = '/'): Promise<void> {
+		// If called inside a cross-origin iframe, window.location.replace()
+		// navigates the iframe itself, not the top-level page.
+		// Automatically fallback to signOutViaPopup() which fully kills the
+		// IAM ADT/BDT server session and notifies the parent to reload.
+		const isIframe = typeof window !== 'undefined' && window.self !== window.top;
+		if (isIframe) {
+			await this.signOutViaPopup(redirectURL);
+			return;
+		}
 		setDefaultProjectConfig();
 		if (this.authProtocol === Auth_Protocol.JwtTokenProtocol) {
 			document.cookie = `${JWT_COOKIE_PREFIX}=; path=/; expires=${new Date().toUTCString()};`;
 			document.cookie = `user_cred=; path=/; expires=${new Date().toUTCString()};`;
 			clearStratusJwt();
-			// Force immediate redirect for JWT
 			window.location.replace(redirectURL);
 			return;
 		} else {
@@ -356,14 +364,11 @@ class Authentication implements Component {
 					};
 					await this.requester.send(request);
 					document.cookie = `CAUTH=; path=/accounts; expires=${new Date().toUTCString()};`;
-					// Use replace instead of href for immediate navigation
 					window.location.replace(redirectURL);
 				} catch {
-					// Use replace for error case too
 					window.location.replace(this.#constructSignOutUrl(redirectURL));
 				}
 			} else {
-				// Use replace instead of href for immediate navigation
 				window.location.replace(this.#constructSignOutUrl(redirectURL));
 			}
 		}
