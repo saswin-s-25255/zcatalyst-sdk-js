@@ -2380,16 +2380,7 @@ exports.responses = {
 		}
 	},
 	'/project-user/change-password': {
-		PUT: {
-			statusCode: 200,
-			data: {
-				status: 'success',
-				data: 'Password changed successfully'
-			}
-		}
-	},
-	'/project-user/change-password?new_password=newPass456&old_password=oldPass123': {
-		PUT: {
+		POST: {
 			statusCode: 200,
 			data: {
 				status: 'success',
