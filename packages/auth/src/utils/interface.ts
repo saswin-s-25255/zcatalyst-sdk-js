@@ -87,6 +87,12 @@ export interface ICatalystSignInConfig {
 	forgotPasswordCssUrl?: string;
 	serviceUrl?: string;
 	redirectUrl?: string;
+	/** Popup window width in pixels when signIn() is called inside an iframe. */
+	popupWidth?: number;
+	/** Popup window height in pixels when signIn() is called inside an iframe. */
+	popupHeight?: number;
+	/** Popup timeout in ms when signIn() is called inside an iframe. */
+	popupTimeoutMs?: number;
 }
 
 // ── Popup Auth Interfaces ──────────────────────────────────────────────────

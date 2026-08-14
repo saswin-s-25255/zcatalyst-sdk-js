@@ -121,6 +121,18 @@ class Authentication implements Component {
 	 * ```
 	 */
 	async signIn(id: string, config: ICatalystSignInConfig = {}): Promise<void> {
+		// If called inside a cross-origin iframe, the Catalyst IAM login page
+		// cannot render due to CSP restrictions. Automatically fallback to
+		// signInViaPopup() which opens login in a popup window instead.
+		const isIframe = typeof window !== 'undefined' && window.self !== window.top;
+		if (isIframe) {
+			await this.signInViaPopup({
+				width: config.popupWidth,
+				height: config.popupHeight,
+				timeoutMs: config.popupTimeoutMs
+			});
+			return;
+		}
 		try {
 			const isValidUser = await this.#isValidUser();
 			if (isValidUser) {
