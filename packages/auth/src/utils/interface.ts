@@ -109,8 +109,11 @@ export interface ICatalystPopupSignInConfig {
 export interface ICatalystPopupSignInResult {
 	/** The authenticated user details. */
 	user: unknown;
-	/** The raw JWT access token set as a cookie. */
-	access_token: string;
+	/** The tokens written as cookies — functions JWT and stratus JWT. */
+	tokens: {
+		functions: string; // → JWT_AUTH_TOKEN cookie
+		stratus: string; // → stratus_jwt cookie (JWT_STRATUS_AUTH in old SDK)
+	};
 }
 
 /**

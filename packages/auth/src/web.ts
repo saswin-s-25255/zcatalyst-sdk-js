@@ -24,6 +24,8 @@ import {
 	CURRENT_CLIENT_PAGE_PORT,
 	CURRENT_CLIENT_PAGE_PROTOCOL,
 	FETCH_DETAILS_CALLBACK_FN,
+	JWT_FUNCTIONS_COOKIE_KEY,
+	JWT_STRATUS_COOKIE_KEY,
 	POPUP_DEFAULT_HEIGHT,
 	POPUP_DEFAULT_TIMEOUT_MS,
 	POPUP_DEFAULT_WIDTH,
@@ -731,22 +733,34 @@ class Authentication implements Component {
 	}
 
 	/**
-	 * Writes JWT tokens into browser cookies.
-	 * Uses CHIPS partitioned cookies (cookieStore API) when called from a
-	 * cross-origin iframe so tokens are sent on requests even with third-party
-	 * cookie restrictions. Falls back to document.cookie on top-level pages.
+	 * Writes both JWT tokens into browser cookies.
+	 *
+	 * - functionsToken -> JWT_AUTH_TOKEN + JWT_AUTH (for API/Functions calls)
+	 * - stratusToken   -> JWT_STRATUS_AUTH (for Stratus calls)
+	 *
+	 * Uses CHIPS partitioned cookies (cookieStore API) in a cross-origin iframe
+	 * so tokens are sent on requests even with third-party cookie restrictions.
+	 * Falls back to document.cookie on top-level pages.
 	 */
-	async #setJwtCookies(token: string, expiresInSec: number): Promise<void> {
+	async #setJwtCookies(
+		functionsToken: string,
+		stratusToken: string,
+		expiresInSec: number
+	): Promise<void> {
 		const isIframe = window.self !== window.top;
 		const maxAge = expiresInSec > 0 ? expiresInSec : 3600;
-		const cookieKeys = [JWT_COOKIE_PREFIX, 'JWT_AUTH_TOKEN'];
+		const cookieEntries: Array<{ key: string; value: string }> = [
+			{ key: JWT_FUNCTIONS_COOKIE_KEY, value: functionsToken }, // JWT_AUTH_TOKEN
+			{ key: JWT_COOKIE_PREFIX, value: functionsToken }, // JWT_AUTH (fallback)
+			{ key: JWT_STRATUS_COOKIE_KEY, value: stratusToken } // JWT_STRATUS_AUTH
+		];
 		if (isIframe && 'cookieStore' in window) {
 			const cs = (window as unknown as { cookieStore: CookieStore }).cookieStore;
 			await Promise.all(
-				cookieKeys.map((key) =>
+				cookieEntries.map(({ key, value }) =>
 					cs.set({
 						name: key,
-						value: token,
+						value,
 						path: '/',
 						expires: Date.now() + maxAge * 1000,
 						secure: true,
@@ -756,8 +770,8 @@ class Authentication implements Component {
 				)
 			);
 		} else {
-			cookieKeys.forEach((key) => {
-				document.cookie = `${key}=${token}; max-age=${maxAge}; path=/; secure; samesite=none`;
+			cookieEntries.forEach(({ key, value }) => {
+				document.cookie = `${key}=${value}; max-age=${maxAge}; path=/; secure; samesite=none`;
 			});
 		}
 	}
@@ -765,7 +779,7 @@ class Authentication implements Component {
 	/** Clears JWT cookies (CHIPS partitioned in iframe, standard on top-level). */
 	async #clearJwtCookies(): Promise<void> {
 		const isIframe = window.self !== window.top;
-		const cookieKeys = [JWT_COOKIE_PREFIX, 'JWT_AUTH_TOKEN'];
+		const cookieKeys = [JWT_COOKIE_PREFIX, JWT_FUNCTIONS_COOKIE_KEY, JWT_STRATUS_COOKIE_KEY];
 		if (isIframe && 'cookieStore' in window) {
 			const cs = (window as unknown as { cookieStore: CookieStore }).cookieStore;
 			await Promise.all(
@@ -833,10 +847,24 @@ class Authentication implements Component {
 				}
 				if (event.data.type !== POPUP_MSG_AUTH_TOKEN) return;
 				if (event.data.eventId !== this.#popupAuthOperation.eventId) return;
-				const token = event.data.access_token;
-				if (typeof token !== 'string' || !token || token.length > 10000) {
+				// Validate both tokens from the popup
+				const functionsToken = event.data.tokens?.functions;
+				const stratusToken = event.data.tokens?.stratus;
+				if (
+					typeof functionsToken !== 'string' ||
+					!functionsToken ||
+					functionsToken.length > 10000 ||
+					typeof stratusToken !== 'string' ||
+					!stratusToken ||
+					stratusToken.length > 10000
+				) {
 					this.#clearPopupOperation('cancelled');
-					reject(new CatalystAuthenticationError('INVALID_TOKEN', 'Malformed token.'));
+					reject(
+						new CatalystAuthenticationError(
+							'INVALID_TOKEN',
+							'Popup sent missing or malformed tokens.'
+						)
+					);
 					return;
 				}
 				this.#popupAuthOperation.status = 'completed';
@@ -849,9 +877,13 @@ class Authentication implements Component {
 						event.data.expires_in_sec < 86400 * 30
 							? event.data.expires_in_sec
 							: 3600;
-					await this.#setJwtCookies(token, exp);
+					// Write both JWT tokens as cookies (CHIPS partitioned when in iframe)
+					await this.#setJwtCookies(functionsToken, stratusToken, exp);
 					const userResp = await this.getProjectUserDetails();
-					resolve({ user: userResp.data ?? userResp, access_token: token });
+					resolve({
+						user: userResp.data ?? userResp,
+						tokens: { functions: functionsToken, stratus: stratusToken }
+					});
 				} catch (err) {
 					reject(
 						new CatalystAuthenticationError(

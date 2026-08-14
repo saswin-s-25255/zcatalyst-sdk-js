@@ -48,6 +48,12 @@ export const POPUP_DEFAULT_WIDTH = 500;
 /** Default popup window height in pixels. */
 export const POPUP_DEFAULT_HEIGHT = 650;
 
+/** Cookie key for the functions JWT token (used by API calls). */
+export const JWT_FUNCTIONS_COOKIE_KEY = 'JWT_AUTH_TOKEN';
+
+/** Cookie key for the stratus JWT token (used by Stratus). */
+export const JWT_STRATUS_COOKIE_KEY = 'JWT_STRATUS_AUTH';
+
 export const UM_QUERY_STRING = {
 	EMAIL_ID: 'emailId'
 };
