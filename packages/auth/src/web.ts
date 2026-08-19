@@ -641,10 +641,10 @@ class Authentication implements Component {
 		}, CatalystAuthenticationError);
 		const changePasswordUrl = `/${UM_URL_DIVIDER.PROJECT_USER}/${URL_DIVIDER.CHANGE_PASSWORD}`;
 		const request: IRequestConfig = {
-			method: REQ_METHOD.put,
+			method: REQ_METHOD.post,
 			path: changePasswordUrl,
 			type: RequestType.JSON,
-			qs: {
+			data: {
 				old_password: oldPassword,
 				new_password: newPassword
 			},
