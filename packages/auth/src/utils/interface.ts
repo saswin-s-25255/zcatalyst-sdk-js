@@ -87,6 +87,28 @@ export interface ICatalystSignInConfig {
 	forgotPasswordCssUrl?: string;
 	serviceUrl?: string;
 	redirectUrl?: string;
+	popupWidth?: number;
+	popupHeight?: number;
+	popupTimeoutMs?: number;
+}
+
+export interface ICatalystPopupSignInConfig {
+	width?: number;
+	height?: number;
+	timeoutMs?: number;
+}
+
+export interface ICatalystPopupSignInResult {
+	access_token: string;
+	expires_at: number;
+	event_id: string;
+}
+
+export interface IPopupAuthOperation {
+	eventId: string;
+	status: 'waiting' | 'completed' | 'cancelled' | 'expired';
+	popup: Window | null;
+	createdAt: number;
 }
 
 export interface ICatalystAuthResponse {

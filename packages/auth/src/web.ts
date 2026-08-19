@@ -1,9 +1,12 @@
 import {
+	clearOAuthTokenFromIDB,
 	clearStratusJwt,
 	ConfigStore,
 	getCredentials,
+	getOAuthTokenFromIDB,
 	JWT_COOKIE_PREFIX,
-	setDefaultProjectConfig
+	setDefaultProjectConfig,
+	setOAuthTokenInIDB
 } from '@zcatalyst/auth-client';
 import { Handler, IRequestConfig, RequestType, ResponseType } from '@zcatalyst/transport';
 import {
@@ -17,6 +20,7 @@ import {
 
 import pkg from '../package.json';
 const { version } = pkg;
+import { isIframeContext } from './utils/browser';
 import {
 	AUTH_ERROR_MSG,
 	AUTH_STATIC_FILES,
@@ -24,6 +28,14 @@ import {
 	CURRENT_CLIENT_PAGE_PORT,
 	CURRENT_CLIENT_PAGE_PROTOCOL,
 	FETCH_DETAILS_CALLBACK_FN,
+	POPUP_DEFAULT_HEIGHT,
+	POPUP_DEFAULT_TIMEOUT_MS,
+	POPUP_DEFAULT_WIDTH,
+	POPUP_MSG_AUTH_ERROR,
+	POPUP_MSG_AUTH_REQUEST,
+	POPUP_MSG_AUTH_TOKEN,
+	POPUP_MSG_SIGNOUT_DONE,
+	POPUP_POLL_INTERVAL_MS,
 	UM_URL_DIVIDER,
 	URL_DIVIDER
 } from './utils/constants';
@@ -32,10 +44,19 @@ import { CatalystAuthenticationError } from './utils/error';
 import { wrapCheck } from './utils/functions';
 import {
 	ICatalystAuthResponse,
+	ICatalystPopupSignInConfig,
+	ICatalystPopupSignInResult,
 	ICatalystSignInConfig,
 	ICatalystSignUpConfig,
+	IPopupAuthOperation,
 	UserDetails
 } from './utils/interface';
+import {
+	buildPopupLoginUrl,
+	buildPopupLogoutUrl,
+	createPopupEventId,
+	openPopupWindow
+} from './utils/popup-auth';
 import { applyQueryString, hasSuffInfo } from './utils/validators';
 
 const { CREDENTIAL_USER, REQ_METHOD, COMPONENT } = CONSTANTS;
@@ -47,6 +68,10 @@ class Authentication implements Component {
 	projectId: string = ConfigStore.get('PROJECT_ID') as string;
 	isAppsail: string = ConfigStore.get('IS_APPSAIL') as string;
 	authProtocol: Auth_Protocol = ConfigStore.get('AUTH_PROTOCOL') as unknown as Auth_Protocol;
+	#popupAuthOperation: IPopupAuthOperation | null = null;
+	#popupPollInterval: ReturnType<typeof setInterval> | null = null;
+	#popupTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+	#popupMessageListener: ((event: MessageEvent) => void) | null = null;
 	/** Creates a browser authentication client for the provided Catalyst app. */
 	constructor(app?: unknown) {
 		this.requester = new Handler(app, this);
@@ -81,7 +106,13 @@ class Authentication implements Component {
 	 * await zcAuth.init();
 	 * ```
 	 */
-	async init(): Promise<void> {}
+	async init(): Promise<void> {
+		//Only inside the iframe getOAuthTokenFromIDB will return a data.
+		const storedToken = await getOAuthTokenFromIDB().catch(() => null);
+		if (storedToken && storedToken.exp > Date.now()) {
+			this.#setAuthProtocol(Auth_Protocol.OAuthTokenProtocol);
+		}
+	}
 
 	/**
 	 * Starts the embedded IAM sign-in flow inside a target DOM element or redirects an already authenticated user.
@@ -106,6 +137,14 @@ class Authentication implements Component {
 	 * ```
 	 */
 	async signIn(id: string, config: ICatalystSignInConfig = {}): Promise<void> {
+		if (isIframeContext()) {
+			await this.signInViaPopup({
+				width: config.popupWidth,
+				height: config.popupHeight,
+				timeoutMs: config.popupTimeoutMs
+			});
+			return;
+		}
 		try {
 			const isValidUser = await this.#isValidUser();
 			if (isValidUser) {
@@ -155,7 +194,7 @@ class Authentication implements Component {
 	 */
 	public signinWithJwt(callbackFn: () => void): void {
 		ConfigStore.set(FETCH_DETAILS_CALLBACK_FN, callbackFn);
-		ConfigStore.set('AUTH_PROTOCOL', Auth_Protocol.JwtTokenProtocol);
+		this.#setAuthProtocol(Auth_Protocol.JwtTokenProtocol);
 	}
 
 	/**
@@ -300,45 +339,54 @@ class Authentication implements Component {
 	 */
 	async signOut(redirectURL = '/'): Promise<void> {
 		setDefaultProjectConfig();
-		if (this.authProtocol === Auth_Protocol.JwtTokenProtocol) {
+		const authProtocol = ConfigStore.get('AUTH_PROTOCOL') as unknown as Auth_Protocol;
+		this.authProtocol = authProtocol;
+		if (isIframeContext()) {
+			await this.signOutViaPopup(redirectURL);
+			return;
+		}
+		if (authProtocol === Auth_Protocol.JwtTokenProtocol) {
 			document.cookie = `${JWT_COOKIE_PREFIX}=; path=/; expires=${new Date().toUTCString()};`;
 			document.cookie = `user_cred=; path=/; expires=${new Date().toUTCString()};`;
 			clearStratusJwt();
 			// Force immediate redirect for JWT
 			window.location.replace(redirectURL);
 			return;
-		} else {
-			if (this.isAppsail === 'true') {
-				const validUser = await this.#isValidUser();
-				if (!validUser) {
-					if (redirectURL.startsWith('/')) {
-						redirectURL =
-							CURRENT_CLIENT_PAGE_PORT != ''
-								? `${CURRENT_CLIENT_PAGE_PROTOCOL}//${CURRENT_CLIENT_PAGE_HOST}:${CURRENT_CLIENT_PAGE_PORT}${redirectURL}`
-								: `${CURRENT_CLIENT_PAGE_PROTOCOL}//${CURRENT_CLIENT_PAGE_HOST}${redirectURL}`;
-					}
-					window.location.replace(redirectURL);
-					return;
+		}
+		if (authProtocol === Auth_Protocol.OAuthTokenProtocol) {
+			await this.#clearTokenStorage();
+			document.cookie = `user_cred=; path=/; expires=${new Date().toUTCString()};`;
+		}
+		if (this.isAppsail === 'true') {
+			const validUser = await this.#isValidUser();
+			if (!validUser) {
+				if (redirectURL.startsWith('/')) {
+					redirectURL =
+						CURRENT_CLIENT_PAGE_PORT != ''
+							? `${CURRENT_CLIENT_PAGE_PROTOCOL}//${CURRENT_CLIENT_PAGE_HOST}:${CURRENT_CLIENT_PAGE_PORT}${redirectURL}`
+							: `${CURRENT_CLIENT_PAGE_PROTOCOL}//${CURRENT_CLIENT_PAGE_HOST}${redirectURL}`;
 				}
+				window.location.replace(redirectURL);
+				return;
+			}
 
-				try {
-					const request: IRequestConfig = {
-						method: REQ_METHOD.get,
-						url: this.#constructSignOutUrl(redirectURL),
-						external: true
-					};
-					await this.requester.send(request);
-					document.cookie = `CAUTH=; path=/accounts; expires=${new Date().toUTCString()};`;
-					// Use replace instead of href for immediate navigation
-					window.location.replace(redirectURL);
-				} catch {
-					// Use replace for error case too
-					window.location.replace(this.#constructSignOutUrl(redirectURL));
-				}
-			} else {
+			try {
+				const request: IRequestConfig = {
+					method: REQ_METHOD.get,
+					url: this.#constructSignOutUrl(redirectURL),
+					external: true
+				};
+				await this.requester.send(request);
+				document.cookie = `CAUTH=; path=/accounts; expires=${new Date().toUTCString()};`;
 				// Use replace instead of href for immediate navigation
+				window.location.replace(redirectURL);
+			} catch {
+				// Use replace for error case too
 				window.location.replace(this.#constructSignOutUrl(redirectURL));
 			}
+		} else {
+			// Use replace instead of href for immediate navigation
+			window.location.replace(this.#constructSignOutUrl(redirectURL));
 		}
 	}
 
@@ -654,6 +702,226 @@ class Authentication implements Component {
 		};
 		const resp = await this.requester.send(request);
 		return resp.data as unknown as string;
+	}
+
+	#setAuthProtocol(protocol: Auth_Protocol): void {
+		this.authProtocol = protocol;
+		ConfigStore.set('AUTH_PROTOCOL', protocol);
+	}
+
+	async #setTokenStorage(accessToken: string, expiresInSec: number): Promise<number> {
+		const expiresAt = Date.now() + expiresInSec * 1000;
+		await setOAuthTokenInIDB(accessToken, expiresAt);
+		return expiresAt;
+	}
+
+	async #clearTokenStorage(): Promise<void> {
+		await clearOAuthTokenFromIDB();
+		clearStratusJwt();
+	}
+
+	#clearPopupOperation(status: IPopupAuthOperation['status'] = 'cancelled'): void {
+		if (this.#popupAuthOperation) {
+			this.#popupAuthOperation.status = status;
+			try {
+				if (this.#popupAuthOperation.popup && !this.#popupAuthOperation.popup.closed) {
+					this.#popupAuthOperation.popup.close();
+				}
+			} catch {
+				// ignore cross-origin close errors
+			}
+			this.#popupAuthOperation.popup = null;
+		}
+		if (this.#popupPollInterval !== null) {
+			clearInterval(this.#popupPollInterval);
+			this.#popupPollInterval = null;
+		}
+		if (this.#popupTimeoutHandle !== null) {
+			clearTimeout(this.#popupTimeoutHandle);
+			this.#popupTimeoutHandle = null;
+		}
+		if (this.#popupMessageListener !== null) {
+			window.removeEventListener('message', this.#popupMessageListener);
+			this.#popupMessageListener = null;
+		}
+		this.#popupAuthOperation = null;
+	}
+
+	async signInViaPopup(
+		config: ICatalystPopupSignInConfig = {}
+	): Promise<ICatalystPopupSignInResult> {
+		if (this.#popupAuthOperation && this.#popupAuthOperation.status === 'waiting') {
+			throw new CatalystAuthenticationError(
+				'POPUP_ALREADY_OPEN',
+				'A sign-in popup is already open.'
+			);
+		}
+		const width = config.width ?? POPUP_DEFAULT_WIDTH;
+		const height = config.height ?? POPUP_DEFAULT_HEIGHT;
+		const timeoutMs = config.timeoutMs ?? POPUP_DEFAULT_TIMEOUT_MS;
+		const eventId = createPopupEventId();
+
+		return new Promise<ICatalystPopupSignInResult>((resolve, reject) => {
+			const onMessage = async (event: MessageEvent): Promise<void> => {
+				if (!this.#popupAuthOperation || this.#popupAuthOperation.status !== 'waiting') {
+					return;
+				}
+				if (event.origin !== window.location.origin || !event.data) {
+					return;
+				}
+				if (event.data.type === POPUP_MSG_AUTH_ERROR) {
+					this.#clearPopupOperation('cancelled');
+					reject(
+						new CatalystAuthenticationError(
+							'POPUP_AUTH_ERROR',
+							event.data.message ?? 'Sign-in failed.'
+						)
+					);
+					return;
+				}
+				if (event.data.type !== POPUP_MSG_AUTH_TOKEN) {
+					return;
+				}
+				if (event.data.eventId !== this.#popupAuthOperation.eventId) {
+					return;
+				}
+
+				const accessToken = event.data.access_token;
+				if (typeof accessToken !== 'string' || !accessToken || accessToken.length > 1000) {
+					this.#clearPopupOperation('cancelled');
+					reject(
+						new CatalystAuthenticationError(
+							'INVALID_TOKEN',
+							'Popup sent missing or malformed token.'
+						)
+					);
+					return;
+				}
+
+				try {
+					const expiresInSec =
+						typeof event.data.expires_in_sec === 'number' &&
+						isFinite(event.data.expires_in_sec) &&
+						event.data.expires_in_sec > 0 &&
+						event.data.expires_in_sec < 86400 * 30
+							? event.data.expires_in_sec
+							: 3600;
+					this.#popupAuthOperation.status = 'completed';
+					const expiresAt = await this.#setTokenStorage(accessToken, expiresInSec);
+					this.#setAuthProtocol(Auth_Protocol.OAuthTokenProtocol);
+					this.#clearPopupOperation('completed');
+					resolve({
+						access_token: accessToken,
+						expires_at: expiresAt,
+						event_id: eventId
+					});
+				} catch (err) {
+					this.#clearPopupOperation('cancelled');
+					reject(
+						new CatalystAuthenticationError(
+							'POST_AUTH_ERROR',
+							err instanceof Error ? err.message : String(err)
+						)
+					);
+				}
+			};
+
+			this.#popupMessageListener = onMessage;
+			window.addEventListener('message', onMessage);
+
+			const popup = openPopupWindow({
+				url: buildPopupLoginUrl(window.location.origin, eventId),
+				name: 'catalystSignIn',
+				width,
+				height
+			});
+			this.#popupAuthOperation = { eventId, status: 'waiting', popup, createdAt: Date.now() };
+
+			this.#popupPollInterval = setInterval(() => {
+				if (!this.#popupAuthOperation || this.#popupAuthOperation.status !== 'waiting') {
+					this.#clearPopupOperation('cancelled');
+					return;
+				}
+				if (this.#popupAuthOperation.popup?.closed) {
+					this.#clearPopupOperation('cancelled');
+					reject(
+						new CatalystAuthenticationError(
+							'POPUP_CLOSED',
+							'Popup closed before auth completed.'
+						)
+					);
+					return;
+				}
+				try {
+					this.#popupAuthOperation.popup?.postMessage(
+						{ type: POPUP_MSG_AUTH_REQUEST, eventId: this.#popupAuthOperation.eventId },
+						window.location.origin
+					);
+				} catch {
+					// suppress during cross-origin redirects
+				}
+			}, POPUP_POLL_INTERVAL_MS);
+
+			this.#popupTimeoutHandle = setTimeout(() => {
+				if (this.#popupAuthOperation?.status === 'waiting') {
+					this.#clearPopupOperation('expired');
+					reject(
+						new CatalystAuthenticationError(
+							'POPUP_TIMEOUT',
+							`Popup timed out after ${timeoutMs / 1000}s.`
+						)
+					);
+				}
+			}, timeoutMs);
+		});
+	}
+
+	async signOutViaPopup(redirectUrl = '/'): Promise<void> {
+		const popup = openPopupWindow({
+			url: buildPopupLogoutUrl(window.location.origin),
+			name: 'catalystSignOut',
+			width: POPUP_DEFAULT_WIDTH,
+			height: POPUP_DEFAULT_HEIGHT
+		});
+		return new Promise<void>((resolve, reject) => {
+			const timeoutHandle = setTimeout(() => {
+				window.removeEventListener('message', onMessage);
+				try {
+					if (!popup.closed) {
+						popup.close();
+					}
+				} catch {
+					// ignore close errors
+				}
+				reject(new CatalystAuthenticationError('POPUP_TIMEOUT', 'Sign-out timed out.'));
+			}, POPUP_DEFAULT_TIMEOUT_MS);
+
+			const onMessage = async (event: MessageEvent): Promise<void> => {
+				if (event.origin !== window.location.origin) {
+					return;
+				}
+				if (!event.data || event.data.type !== POPUP_MSG_SIGNOUT_DONE) {
+					return;
+				}
+				clearTimeout(timeoutHandle);
+				window.removeEventListener('message', onMessage);
+				try {
+					if (!popup.closed) {
+						popup.close();
+					}
+				} catch {
+					// ignore close errors
+				}
+				await this.#clearTokenStorage();
+				document.cookie = `user_cred=; max-age=0; path=/`;
+				if (redirectUrl) {
+					window.location.replace(redirectUrl);
+				}
+				resolve();
+			};
+
+			window.addEventListener('message', onMessage);
+		});
 	}
 }
 export { UserManagement } from './user-management';

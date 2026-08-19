@@ -236,6 +236,11 @@ export async function collectZCRFToken(): Promise<unknown> {
 export { Auth_Protocol, ConfigStore };
 export * from './utils/constants';
 export {
+	clearOAuthTokenFromIDB,
+	getOAuthTokenFromIDB,
+	setOAuthTokenInIDB
+} from './utils/idb-token';
+export {
 	clearStratusJwt,
 	getStratusJwtExpiry,
 	getStratusSessionVersion,

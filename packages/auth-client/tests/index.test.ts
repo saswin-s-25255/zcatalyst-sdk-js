@@ -1,14 +1,96 @@
 import { ConfigStore } from '../src/config-store';
-import { collectZCRFToken, getCredentials, setDefaultProjectConfig } from '../src/index';
+import {
+	clearOAuthTokenFromIDB,
+	collectZCRFToken,
+	getCredentials,
+	getOAuthTokenFromIDB,
+	setDefaultProjectConfig,
+	setOAuthTokenInIDB
+} from '../src/index';
 import { CSRF_TOKEN, INITIALIZED, PROJECT_ID, ZAID } from '../src/utils/constants';
 
 // Mock fetch globally
 global.fetch = jest.fn() as jest.Mock;
 
 describe('auth-client index', () => {
+	const idbStore = new Map();
+
+	function setupIndexedDBMock() {
+		(global as unknown as { indexedDB: unknown }).indexedDB = {
+			open: jest.fn(() => {
+				const request: any = {
+					result: {
+						objectStoreNames: {
+							contains: () => true
+						},
+						createObjectStore: jest.fn(),
+						transaction: (_storeName: string, _mode: string) => {
+							const transaction: any = {};
+							const store = {
+								get: (key: string) => {
+									const idbRequest: any = {};
+									queueMicrotask(() => {
+										idbRequest.result = idbStore.get(key);
+										idbRequest.onsuccess?.(new Event('success'));
+										transaction.oncomplete?.(new Event('complete'));
+									});
+									return idbRequest;
+								},
+								put: (value: unknown, key: string) => {
+									const idbRequest: any = {};
+									queueMicrotask(() => {
+										idbStore.set(key, value);
+										idbRequest.result = undefined;
+										idbRequest.onsuccess?.(new Event('success'));
+										transaction.oncomplete?.(new Event('complete'));
+									});
+									return idbRequest;
+								},
+								delete: (key: string) => {
+									const idbRequest: any = {};
+									queueMicrotask(() => {
+										idbStore.delete(key);
+										idbRequest.result = undefined;
+										idbRequest.onsuccess?.(new Event('success'));
+										transaction.oncomplete?.(new Event('complete'));
+									});
+									return idbRequest;
+								}
+							};
+
+							return {
+								objectStore: () => store,
+								set oncomplete(handler: unknown) {
+									transaction.oncomplete = handler;
+								},
+								get oncomplete() {
+									return transaction.oncomplete;
+								},
+								set onerror(handler: unknown) {
+									transaction.onerror = handler;
+								},
+								get onerror() {
+									return transaction.onerror;
+								},
+								error: null
+							};
+						},
+						close: jest.fn()
+					}
+				};
+				queueMicrotask(() => {
+					request.onsuccess?.(new Event('success'));
+				});
+				return request;
+			})
+		};
+	}
+
 	beforeEach(() => {
 		ConfigStore.clear();
 		(global.fetch as jest.Mock).mockClear();
+		idbStore.clear();
+		setupIndexedDBMock();
 	});
 
 	describe('setDefaultProjectConfig', () => {
@@ -86,6 +168,24 @@ describe('auth-client index', () => {
 			document.cookie = '';
 
 			await expect(collectZCRFToken()).resolves.not.toThrow();
+		});
+	});
+
+	describe('OAuth IndexedDB token helpers', () => {
+		it('should store and read the OAuth token from IndexedDB', async () => {
+			await setOAuthTokenInIDB('oauth-token', 12345);
+
+			await expect(getOAuthTokenFromIDB()).resolves.toEqual({
+				token: 'oauth-token',
+				exp: 12345
+			});
+		});
+
+		it('should clear the OAuth token from IndexedDB', async () => {
+			await setOAuthTokenInIDB('oauth-token', 12345);
+			await clearOAuthTokenFromIDB();
+
+			await expect(getOAuthTokenFromIDB()).resolves.toBeNull();
 		});
 	});
 });
