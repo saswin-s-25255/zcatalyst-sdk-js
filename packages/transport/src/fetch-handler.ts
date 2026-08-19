@@ -1,6 +1,7 @@
 import {
 	addDefaultAppHeaders,
 	Auth_Protocol,
+	AUTH_TOKEN_PREFIX,
 	collectZCRFToken,
 	ConfigStore,
 	getToken,
@@ -376,14 +377,16 @@ export class ResponseHandler {
 	 * ```
 	 */
 	public static getJWTZCAuthToken(): Promise<jwtAccessTokenResponse> {
-		const jwtPrefix = ConfigStore.get(JWT_COOKIE_PREFIX);
+		// AUTH_TOKEN_PREFIX = 'Bearer' — the correct Authorization header prefix
+		// JWT_COOKIE_PREFIX = 'JWT_AUTH' — this is the COOKIE NAME to read from,
+		// NOT a config key. ConfigStore.get('JWT_AUTH') would return undefined.
 		return new Promise((resolve, reject) => {
-			const jwtZCAuthToken = getToken() as unknown as string;
+			const jwtZCAuthToken = getToken(JWT_COOKIE_PREFIX) as unknown as string;
 			if (jwtZCAuthToken === '') {
 				reject('Unable to get the JWT Access Token.');
 			} else {
 				resolve({
-					access_token: `${jwtPrefix} ${jwtZCAuthToken}`
+					access_token: `${AUTH_TOKEN_PREFIX} ${jwtZCAuthToken}`
 				});
 			}
 		});

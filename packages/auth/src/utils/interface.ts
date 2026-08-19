@@ -111,15 +111,11 @@ export interface ICatalystPopupSignInConfig {
 
 /**
  * Result returned by signInViaPopup() after a successful sign-in.
+ * JWT cookies are written; caller should reload to pick them up.
  */
 export interface ICatalystPopupSignInResult {
-	/** The authenticated user details. */
-	user: unknown;
-	/** The tokens written as cookies — functions JWT and stratus JWT. */
-	tokens: {
-		functions: string; // → JWT_AUTH_TOKEN cookie
-		stratus: string; // → stratus_jwt cookie (JWT_STRATUS_AUTH in old SDK)
-	};
+	/** The raw access token written as JWT_AUTH_TOKEN and JWT_AUTH cookies. */
+	access_token: string;
 }
 
 /**

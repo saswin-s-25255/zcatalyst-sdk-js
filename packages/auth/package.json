@@ -1,6 +1,6 @@
 {
   "name": "@zcatalyst/auth",
-  "version": "0.0.3",
+  "version": "0.0.5-beta.7",
   "main": "./dist-cjs/index.js",
   "module": "./dist-es/index.js",
   "types": "./dist-types/index.d.ts",
@@ -59,10 +59,10 @@
     "format": "prettier  --ignore-path ../.prettierignore --write \"{src, test}/*.ts\""
   },
   "dependencies": {
-    "@zcatalyst/auth-admin": "workspace:^",
-    "@zcatalyst/transport": "workspace:^",
-    "@zcatalyst/utils": "workspace:^",
-    "@zcatalyst/auth-client": "workspace:^"
+    "@zcatalyst/auth-admin": "^0.0.6",
+    "@zcatalyst/transport": "^0.0.6",
+    "@zcatalyst/utils": "^0.0.6",
+    "@zcatalyst/auth-client": "0.0.5-beta.1"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",

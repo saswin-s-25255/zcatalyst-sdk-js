@@ -18,11 +18,18 @@ export const URL_DIVIDER = {
 
 // ── Popup Auth Constants ───────────────────────────────────────────────────
 
-/** Full path to the popup sign-in page served by the Catalyst backend. */
-export const POPUP_LOGIN_PATH = `/__catalyst/auth/login/popup`;
+/**
+ * Base path for the POC popup sign-in page served by the React SPA.
+ * The eventId is appended at runtime: POPUP_LOGIN_PATH + '/' + eventId
+ * e.g.  /__cat/auth/login/popup/3827491023
+ *
+ * NOTE: This intentionally differs from the broken backend route
+ *       /__catalyst/auth/login/popup  — this POC replaces that behaviour.
+ */
+export const POPUP_LOGIN_PATH = `/__cat/auth/login/popup`;
 
 /** Full path to the popup sign-out page served by the Catalyst backend. */
-export const POPUP_LOGOUT_PATH = `/__catalyst/auth/logout/popup`;
+export const POPUP_LOGOUT_PATH = `/__cat/auth/logout/popup`;
 
 /** postMessage type sent by iframe → popup to request the auth token. */
 export const POPUP_MSG_AUTH_REQUEST = 'catalyst-auth-request';

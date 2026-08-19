@@ -1,6 +1,6 @@
 {
   "name": "@zcatalyst/auth-client",
-  "version": "0.0.3",
+  "version": "0.0.5-beta.1",
   "main": "./dist-cjs/index.js",
   "module": "./dist-es/index.js",
   "types": "./dist-types/index.d.ts",

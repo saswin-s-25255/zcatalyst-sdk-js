@@ -1,3 +1,5 @@
 packages:
   - "packages/*"
   - "tools/*"
+minimumReleaseAgeExclude:
+  - '@zcatalyst/auth-client@0.0.5-beta || 0.0.5-beta.1'

@@ -750,26 +750,20 @@ class Authentication implements Component {
 	}
 
 	/**
-	 * Writes both JWT tokens into browser cookies.
+	 * Writes the JWT access token into browser cookies.
 	 *
-	 * - functionsToken -> JWT_AUTH_TOKEN + JWT_AUTH (for API/Functions calls)
-	 * - stratusToken   -> JWT_STRATUS_AUTH (for Stratus calls)
+	 * - accessToken -> JWT_AUTH_TOKEN + JWT_AUTH (for API/Functions calls)
 	 *
 	 * Uses CHIPS partitioned cookies (cookieStore API) in a cross-origin iframe
 	 * so tokens are sent on requests even with third-party cookie restrictions.
 	 * Falls back to document.cookie on top-level pages.
 	 */
-	async #setJwtCookies(
-		functionsToken: string,
-		stratusToken: string,
-		expiresInSec: number
-	): Promise<void> {
+	async #setJwtCookies(accessToken: string, expiresInSec: number): Promise<void> {
 		const isIframe = window.self !== window.top;
 		const maxAge = expiresInSec > 0 ? expiresInSec : 3600;
 		const cookieEntries: Array<{ key: string; value: string }> = [
-			{ key: JWT_FUNCTIONS_COOKIE_KEY, value: functionsToken }, // JWT_AUTH_TOKEN
-			{ key: JWT_COOKIE_PREFIX, value: functionsToken }, // JWT_AUTH (fallback)
-			{ key: JWT_STRATUS_COOKIE_KEY, value: stratusToken } // JWT_STRATUS_AUTH
+			{ key: JWT_FUNCTIONS_COOKIE_KEY, value: accessToken }, // JWT_AUTH_TOKEN
+			{ key: JWT_COOKIE_PREFIX, value: accessToken } // JWT_AUTH (fallback)
 		];
 		if (isIframe && 'cookieStore' in window) {
 			const cs = (window as unknown as { cookieStore: CookieStore }).cookieStore;
@@ -821,9 +815,12 @@ class Authentication implements Component {
 	}
 
 	/**
-	 * Signs in via a secure popup. Opens `/__catalyst/auth/login/popup`.
-	 * The popup verifies the opener origin before generating any token.
-	 * @example const { user } = await zcAuth.signInViaPopup();
+	 * Signs in via a secure popup. Opens `/__cat/auth/login/popup/{eventId}`.
+	 * The popup page checks auth, redirects to IAM if needed, then postMessages
+	 * the JWT token back. Two checks are enforced on the received message:
+	 *   1. event.origin === window.location.origin  (same domain)
+	 *   2. event.data.eventId === eventId           (same auth session)
+	 * @example const result = await zcAuth.signInViaPopup();
 	 */
 	async signInViaPopup(
 		config: ICatalystPopupSignInConfig = {}
@@ -837,21 +834,31 @@ class Authentication implements Component {
 		const width = config.width ?? POPUP_DEFAULT_WIDTH;
 		const height = config.height ?? POPUP_DEFAULT_HEIGHT;
 		const timeoutMs = config.timeoutMs ?? POPUP_DEFAULT_TIMEOUT_MS;
-		const eventId = crypto.randomUUID();
-		const popup = this.#openPopupWindow(
-			`${window.location.origin}${POPUP_LOGIN_PATH}`,
-			'catalystSignIn',
-			width,
-			height
-		);
-		this.#popupAuthOperation = { eventId, status: 'waiting', popup, createdAt: Date.now() };
+
+		// Generate a unique eventId for this auth session (UUID v4)
+		const eventId =
+			typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+				? crypto.randomUUID()
+				: 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+						const r = (Math.random() * 16) | 0;
+						return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+					});
+
+		// ── Register the message listener BEFORE opening the popup ────────────
+		// If the popup loads and fires postMessage before the Promise executor
+		// runs (race condition), the message would be lost. Registering first
+		// guarantees we never miss the token delivery.
 		return new Promise<ICatalystPopupSignInResult>((resolve, reject) => {
 			const onMessage = async (event: MessageEvent): Promise<void> => {
 				if (!this.#popupAuthOperation || this.#popupAuthOperation.status !== 'waiting')
 					return;
+
+				// ── CHECK 1: domain must match ─────────────────────────────────────
+				// Reject any message that does not come from our own origin
 				if (event.origin !== window.location.origin) return;
-				if (event.source !== this.#popupAuthOperation.popup) return;
+
 				if (!event.data) return;
+
 				if (event.data.type === POPUP_MSG_AUTH_ERROR) {
 					this.#clearPopupOperation('cancelled');
 					reject(
@@ -862,24 +869,22 @@ class Authentication implements Component {
 					);
 					return;
 				}
+
 				if (event.data.type !== POPUP_MSG_AUTH_TOKEN) return;
+
+				// ── CHECK 2: eventId must match ────────────────────────────────────
+				// Reject any message whose eventId does not match this auth session.
+				// This prevents a stale / replayed popup message from being accepted.
 				if (event.data.eventId !== this.#popupAuthOperation.eventId) return;
-				// Validate both tokens from the popup
-				const functionsToken = event.data.tokens?.functions;
-				const stratusToken = event.data.tokens?.stratus;
-				if (
-					typeof functionsToken !== 'string' ||
-					!functionsToken ||
-					functionsToken.length > 10000 ||
-					typeof stratusToken !== 'string' ||
-					!stratusToken ||
-					stratusToken.length > 10000
-				) {
+
+				// Validate token shape
+				const accessToken = event.data.access_token;
+				if (typeof accessToken !== 'string' || !accessToken || accessToken.length > 10000) {
 					this.#clearPopupOperation('cancelled');
 					reject(
 						new CatalystAuthenticationError(
 							'INVALID_TOKEN',
-							'Popup sent missing or malformed tokens.'
+							'Popup sent missing or malformed token.'
 						)
 					);
 					return;
@@ -894,13 +899,14 @@ class Authentication implements Component {
 						event.data.expires_in_sec < 86400 * 30
 							? event.data.expires_in_sec
 							: 3600;
-					// Write both JWT tokens as cookies (CHIPS partitioned when in iframe)
-					await this.#setJwtCookies(functionsToken, stratusToken, exp);
-					const userResp = await this.getProjectUserDetails();
-					resolve({
-						user: userResp.data ?? userResp,
-						tokens: { functions: functionsToken, stratus: stratusToken }
-					});
+					await this.#setJwtCookies(accessToken, exp);
+					// ── Switch auth protocol to JWT ─────────────────────────────
+					// Default is ZcrfTokenProtocol. After popup sets cookies, flip
+					// to JwtTokenProtocol so every subsequent API call sends:
+					//   Authorization: Bearer <token>
+					// Without this the Authorization header is never set → 401.
+					ConfigStore.set('AUTH_PROTOCOL', Auth_Protocol.JwtTokenProtocol);
+					resolve({ access_token: accessToken });
 				} catch (err) {
 					reject(
 						new CatalystAuthenticationError(
@@ -910,8 +916,21 @@ class Authentication implements Component {
 					);
 				}
 			};
+			// Register listener FIRST — before the popup is opened
 			this.#popupMessageListener = onMessage;
 			window.addEventListener('message', onMessage);
+
+			// ── NOW open the popup — listener is already in place ─────────────
+			// e.g. /__cat/auth/login/popup/3827491023
+			// The PopupLoginPage reads eventId from window.location.pathname
+			const popup = this.#openPopupWindow(
+				`${window.location.origin}${POPUP_LOGIN_PATH}/${eventId}`,
+				'catalystSignIn',
+				width,
+				height
+			);
+			this.#popupAuthOperation = { eventId, status: 'waiting', popup, createdAt: Date.now() };
+
 			this.#popupPollInterval = setInterval(() => {
 				if (!this.#popupAuthOperation || this.#popupAuthOperation.status !== 'waiting') {
 					this.#clearPopupOperation('cancelled');
@@ -974,7 +993,7 @@ class Authentication implements Component {
 			}, POPUP_DEFAULT_TIMEOUT_MS);
 			const onMsg = async (event: MessageEvent): Promise<void> => {
 				if (event.origin !== window.location.origin) return;
-				if (event.source !== popup) return;
+				// event.source check removed — same WindowProxy issue as signInViaPopup
 				if (!event.data || event.data.type !== POPUP_MSG_SIGNOUT_DONE) return;
 				clearTimeout(th);
 				window.removeEventListener('message', onMsg);

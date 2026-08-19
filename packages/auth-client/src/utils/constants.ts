@@ -140,3 +140,18 @@ export const defaultConfig: CatalystConfig = {
 	[IS_APPSAIL]: 'false',
 	[ENVIRONMENT]: 'development'
 };
+
+// =============================================================================
+// BROWSER PAGE CONSTANTS
+// =============================================================================
+
+export const CURRENT_CLIENT_PAGE_HOST =
+	typeof document !== 'undefined' ? document.location.hostname : '';
+export const CURRENT_CLIENT_PAGE_PROTOCOL =
+	typeof document !== 'undefined' ? document.location.protocol : '';
+export const CURRENT_CLIENT_PAGE_PORT =
+	typeof document !== 'undefined' ? document.location.port : '';
+export const CURRENT_CLIENT_PAGE_ORIGIN =
+	typeof document !== 'undefined' ? document.location.origin : '';
+export const CURRENT_CLIENT_PAGE_HREF =
+	typeof document !== 'undefined' ? document.location.href : '';
