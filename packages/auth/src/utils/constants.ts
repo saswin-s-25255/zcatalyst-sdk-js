@@ -22,6 +22,7 @@ export const POPUP_MSG_SIGNOUT_DONE = 'catalyst-signout-done';
 export const POPUP_MSG_AUTH_ERROR = 'catalyst-auth-error';
 export const POPUP_POLL_INTERVAL_MS = 500;
 export const POPUP_DEFAULT_TIMEOUT_MS = 120_000;
+export const POPUP_DEFAULT_IS_HOSTED = false;
 export const POPUP_DEFAULT_WIDTH = 600;
 export const POPUP_DEFAULT_HEIGHT = 700;
 

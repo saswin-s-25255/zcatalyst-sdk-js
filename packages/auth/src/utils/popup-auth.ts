@@ -98,8 +98,8 @@ export function openPopupWindow({
 	return popup;
 }
 
-export function buildPopupLoginUrl(origin: string, eventId: string): string {
-	return `${origin}${POPUP_LOGIN_PATH}/${eventId}?embedded=true`;
+export function buildPopupLoginUrl(origin: string, eventId: string, hosted: boolean): string {
+	return `${origin}${POPUP_LOGIN_PATH}/${eventId}?hosted=${hosted}`;
 }
 
 export function buildPopupLogoutUrl(origin: string): string {

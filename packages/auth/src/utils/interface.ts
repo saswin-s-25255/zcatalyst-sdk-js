@@ -90,12 +90,14 @@ export interface ICatalystSignInConfig {
 	popupWidth?: number;
 	popupHeight?: number;
 	popupTimeoutMs?: number;
+	isHosted?: boolean;
 }
 
 export interface ICatalystPopupSignInConfig {
 	width?: number;
 	height?: number;
 	timeoutMs?: number;
+	isHosted?: boolean;
 }
 
 export interface ICatalystPopupSignInResult {

@@ -29,6 +29,7 @@ import {
 	CURRENT_CLIENT_PAGE_PROTOCOL,
 	FETCH_DETAILS_CALLBACK_FN,
 	POPUP_DEFAULT_HEIGHT,
+	POPUP_DEFAULT_IS_HOSTED,
 	POPUP_DEFAULT_TIMEOUT_MS,
 	POPUP_DEFAULT_WIDTH,
 	POPUP_MSG_AUTH_ERROR,
@@ -44,6 +45,7 @@ import { CatalystAuthenticationError } from './utils/error';
 import { wrapCheck } from './utils/functions';
 import {
 	ICatalystAuthResponse,
+	ICatalystCustomTokenResponse,
 	ICatalystPopupSignInConfig,
 	ICatalystPopupSignInResult,
 	ICatalystSignInConfig,
@@ -58,6 +60,11 @@ import {
 	openPopupWindow
 } from './utils/popup-auth';
 import { applyQueryString, hasSuffInfo } from './utils/validators';
+
+type Token_responce = {
+	expires_in_sec: number;
+	access_token: string;
+};
 
 const { CREDENTIAL_USER, REQ_METHOD, COMPONENT } = CONSTANTS;
 
@@ -141,7 +148,8 @@ class Authentication implements Component {
 			await this.signInViaPopup({
 				width: config.popupWidth,
 				height: config.popupHeight,
-				timeoutMs: config.popupTimeoutMs
+				timeoutMs: config.popupTimeoutMs,
+				isHosted: config.isHosted
 			});
 			return;
 		}
@@ -759,6 +767,7 @@ class Authentication implements Component {
 		const width = config.width ?? POPUP_DEFAULT_WIDTH;
 		const height = config.height ?? POPUP_DEFAULT_HEIGHT;
 		const timeoutMs = config.timeoutMs ?? POPUP_DEFAULT_TIMEOUT_MS;
+		const isHosted = config.isHosted ?? POPUP_DEFAULT_IS_HOSTED;
 		const eventId = createPopupEventId();
 
 		return new Promise<ICatalystPopupSignInResult>((resolve, reject) => {
@@ -830,7 +839,7 @@ class Authentication implements Component {
 			window.addEventListener('message', onMessage);
 
 			const popup = openPopupWindow({
-				url: buildPopupLoginUrl(window.location.origin, eventId),
+				url: buildPopupLoginUrl(window.location.origin, eventId, isHosted),
 				name: 'catalystSignIn',
 				width,
 				height
@@ -922,6 +931,65 @@ class Authentication implements Component {
 
 			window.addEventListener('message', onMessage);
 		});
+	}
+
+	async generateAuthToken(feature: 'functions' | 'stratus'): Promise<Token_responce> {
+		const customTokenRequest: IRequestConfig = {
+			method: REQ_METHOD.get,
+			path: '/authentication/custom-token',
+			type: RequestType.JSON,
+			service: CatalystService.BAAS,
+			user: CREDENTIAL_USER.user,
+			qs: {
+				feature
+			}
+		};
+		const customTokenResp = await this.requester.send(customTokenRequest);
+		const customTokenData = customTokenResp.data.data as ICatalystCustomTokenResponse;
+
+		const remoteAuthRequest: IRequestConfig = {
+			method: REQ_METHOD.post,
+			service: CatalystService.EXTERNAL,
+			path: `/clientoauth/v2/${this.zaid}/remote/auth`,
+			origin: ConfigStore.get('IAM_DOMAIN') as string,
+			auth: false,
+			headers: {
+				Origin: window.location.origin
+			},
+			qs: {
+				response_type: 'remote_token',
+				scope: customTokenData.scopes.join(' '),
+				client_id: customTokenData.client_id,
+				jwt_token: customTokenData.jwt_token
+			}
+		};
+
+		const remoteAuthResp = await this.requester.send(remoteAuthRequest);
+		const remoteAuthData = remoteAuthResp.data as {
+			access_token?: string;
+			access_toke?: string;
+			expires_in_sec?: number;
+			expires_in?: number;
+		};
+
+		const accessToken = remoteAuthData.access_token ?? remoteAuthData.access_toke;
+		if (!accessToken) {
+			throw new CatalystAuthenticationError(
+				'AUTHENTICATION_ERROR',
+				'Unable to exchange JWT token for an OAuth access token.'
+			);
+		}
+
+		const expiresInSec =
+			typeof remoteAuthData.expires_in_sec === 'number'
+				? remoteAuthData.expires_in_sec
+				: typeof remoteAuthData.expires_in === 'number'
+					? remoteAuthData.expires_in
+					: 3600;
+		return {
+			access_token: accessToken,
+			expires_in_sec: expiresInSec
+		};
 	}
 }
 export { UserManagement } from './user-management';
