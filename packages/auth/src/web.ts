@@ -20,7 +20,7 @@ import {
 
 import pkg from '../package.json';
 const { version } = pkg;
-import { isIframeContext } from './utils/browser';
+import { isIframeContext as detectIframeContext } from './utils/browser';
 import {
 	AUTH_ERROR_MSG,
 	AUTH_STATIC_FILES,
@@ -32,6 +32,8 @@ import {
 	POPUP_DEFAULT_IS_HOSTED,
 	POPUP_DEFAULT_TIMEOUT_MS,
 	POPUP_DEFAULT_WIDTH,
+	POPUP_LOGIN_PATH,
+	POPUP_LOGOUT_PATH,
 	POPUP_MSG_AUTH_ERROR,
 	POPUP_MSG_AUTH_REQUEST,
 	POPUP_MSG_AUTH_TOKEN,
@@ -46,6 +48,8 @@ import { wrapCheck } from './utils/functions';
 import {
 	ICatalystAuthResponse,
 	ICatalystCustomTokenResponse,
+	ICatalystDeliverAuthTokenConfig,
+	ICatalystDeliverSignOutDoneConfig,
 	ICatalystPopupSignInConfig,
 	ICatalystPopupSignInResult,
 	ICatalystSignInConfig,
@@ -57,6 +61,8 @@ import {
 	buildPopupLoginUrl,
 	buildPopupLogoutUrl,
 	createPopupEventId,
+	deliverAuthTokenToParent as postAuthTokenToParent,
+	deliverSignOutDoneToParent as postSignOutDoneToParent,
 	openPopupWindow
 } from './utils/popup-auth';
 import { applyQueryString, hasSuffInfo } from './utils/validators';
@@ -68,6 +74,16 @@ type Token_responce = {
 
 const { CREDENTIAL_USER, REQ_METHOD, COMPONENT } = CONSTANTS;
 
+/** Popup message-type / path constants exposed on {@link zcAuth}. */
+export const popupConstants = {
+	POPUP_LOGIN_PATH,
+	POPUP_LOGOUT_PATH,
+	POPUP_MSG_AUTH_REQUEST,
+	POPUP_MSG_AUTH_TOKEN,
+	POPUP_MSG_SIGNOUT_DONE,
+	POPUP_MSG_AUTH_ERROR
+} as const;
+
 /** Provides browser authentication flows for hosted sign-in, embedded sign-in, sign-up, and user profile access. */
 class Authentication implements Component {
 	requester: Handler;
@@ -75,6 +91,7 @@ class Authentication implements Component {
 	projectId: string = ConfigStore.get('PROJECT_ID') as string;
 	isAppsail: string = ConfigStore.get('IS_APPSAIL') as string;
 	authProtocol: Auth_Protocol = ConfigStore.get('AUTH_PROTOCOL') as unknown as Auth_Protocol;
+	readonly popupConstants = popupConstants;
 	#popupAuthOperation: IPopupAuthOperation | null = null;
 	#popupPollInterval: ReturnType<typeof setInterval> | null = null;
 	#popupTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -114,11 +131,31 @@ class Authentication implements Component {
 	 * ```
 	 */
 	async init(): Promise<void> {
+		// Ensure credentials (project_id, zaid, org_id, etc.) are fetched before
+		// any auth operation. The constructor fires getCredentials() in the background
+		// (fire-and-forget), so awaiting it here guarantees project_id is set before
+		// isUserAuthenticated() / signIn() / generateAuthToken() run — preventing
+		// URLs like /baas/v1/project/undefined/project-user/current in popup contexts.
+		await getCredentials();
 		//Only inside the iframe getOAuthTokenFromIDB will return a data.
 		const storedToken = await getOAuthTokenFromIDB().catch(() => null);
 		if (storedToken && storedToken.exp > Date.now()) {
 			this.#setAuthProtocol(Auth_Protocol.OAuthTokenProtocol);
 		}
+	}
+
+	/**
+	 * Returns whether the SDK is running inside an iframe.
+	 *
+	 * @example
+	 * ```ts
+	 * if (zcAuth.isIframeContext()) {
+	 *   await zcAuth.signInViaPopup();
+	 * }
+	 * ```
+	 */
+	isIframeContext(): boolean {
+		return detectIframeContext();
 	}
 
 	/**
@@ -144,7 +181,7 @@ class Authentication implements Component {
 	 * ```
 	 */
 	async signIn(id: string, config: ICatalystSignInConfig = {}): Promise<void> {
-		if (isIframeContext()) {
+		if (detectIframeContext()) {
 			await this.signInViaPopup({
 				width: config.popupWidth,
 				height: config.popupHeight,
@@ -349,7 +386,7 @@ class Authentication implements Component {
 		setDefaultProjectConfig();
 		const authProtocol = ConfigStore.get('AUTH_PROTOCOL') as unknown as Auth_Protocol;
 		this.authProtocol = authProtocol;
-		if (isIframeContext()) {
+		if (detectIframeContext()) {
 			await this.signOutViaPopup(redirectURL);
 			return;
 		}
@@ -933,6 +970,55 @@ class Authentication implements Component {
 		});
 	}
 
+	/**
+	 * Sends the OAuth access token from the popup window to the opener via postMessage.
+	 * Intended for the popup login page at `/__catalyst/auth/login/popup/{eventId}`.
+	 *
+	 * When `access_token` and `expires_in_sec` are omitted, they are fetched via
+	 * {@link generateAuthToken}. `eventId` is resolved from the popup URL when omitted.
+	 *
+	 * @param config - Token delivery configuration.
+	 * @returns A promise that resolves after the token is posted to the parent window.
+	 *
+	 * @example
+	 * ```ts
+	 * await zcAuth.init();
+	 * await zcAuth.deliverAuthTokenToParent({ targetOrigin: window.location.origin });
+	 * ```
+	 */
+	async deliverAuthTokenToParent(config: ICatalystDeliverAuthTokenConfig = {}): Promise<void> {
+		let accessToken = config.access_token;
+		let expiresInSec = config.expires_in_sec;
+
+		if (!accessToken || !expiresInSec) {
+			const token = await this.generateAuthToken(config.feature ?? 'functions');
+			accessToken = accessToken ?? token.access_token;
+			expiresInSec = expiresInSec ?? token.expires_in_sec;
+		}
+
+		postAuthTokenToParent({
+			access_token: accessToken,
+			expires_in_sec: expiresInSec,
+			eventId: config.eventId,
+			targetOrigin: config.targetOrigin
+		});
+	}
+
+	/**
+	 * Notifies the opener that popup sign-out completed.
+	 * Intended for the popup logout page at `/__catalyst/auth/logout/popup`.
+	 *
+	 * @param config - Optional target origin for postMessage.
+	 *
+	 * @example
+	 * ```ts
+	 * zcAuth.deliverSignOutDoneToParent({ targetOrigin: window.location.origin });
+	 * ```
+	 */
+	deliverSignOutDoneToParent(config: ICatalystDeliverSignOutDoneConfig = {}): void {
+		postSignOutDoneToParent(config.targetOrigin);
+	}
+
 	async generateAuthToken(feature: 'functions' | 'stratus'): Promise<Token_responce> {
 		const customTokenRequest: IRequestConfig = {
 			method: REQ_METHOD.get,
@@ -993,6 +1079,7 @@ class Authentication implements Component {
 	}
 }
 export { UserManagement } from './user-management';
+export { isIframeContext } from './utils/browser';
 export * from './utils/constants';
 
 export const zcAuth = new Authentication();

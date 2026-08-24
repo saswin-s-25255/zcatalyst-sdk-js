@@ -3,7 +3,8 @@ import {
 	POPUP_DEFAULT_WIDTH,
 	POPUP_LOGIN_PATH,
 	POPUP_LOGOUT_PATH,
-	POPUP_MSG_AUTH_TOKEN
+	POPUP_MSG_AUTH_TOKEN,
+	POPUP_MSG_SIGNOUT_DONE
 } from './constants';
 import { CatalystAuthenticationError } from './error';
 
@@ -64,6 +65,18 @@ export function deliverAuthTokenToParent({
 			eventId: resolvedEventId,
 			access_token,
 			expires_in_sec
+		},
+		targetOrigin ?? window.location.origin
+	);
+}
+
+export function deliverSignOutDoneToParent(targetOrigin?: string): void {
+	if (typeof window === 'undefined' || !window.opener || window.opener.closed) {
+		throw new Error('Parent window is not available.');
+	}
+	window.opener.postMessage(
+		{
+			type: POPUP_MSG_SIGNOUT_DONE
 		},
 		targetOrigin ?? window.location.origin
 	);

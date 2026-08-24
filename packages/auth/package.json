@@ -1,6 +1,6 @@
 {
   "name": "@zcatalyst/auth",
-  "version": "0.0.3",
+  "version": "0.0.3-beta-login",
   "main": "./dist-cjs/index.js",
   "module": "./dist-es/index.js",
   "types": "./dist-types/index.d.ts",
@@ -60,9 +60,9 @@
   },
   "dependencies": {
     "@zcatalyst/auth-admin": "workspace:^",
-    "@zcatalyst/transport": "workspace:^",
+    "@zcatalyst/transport": "workspace:*",
     "@zcatalyst/utils": "workspace:^",
-    "@zcatalyst/auth-client": "workspace:^"
+    "@zcatalyst/auth-client": "workspace:*"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",
