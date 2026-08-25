@@ -96,6 +96,7 @@ class Authentication implements Component {
 	#popupPollInterval: ReturnType<typeof setInterval> | null = null;
 	#popupTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
 	#popupMessageListener: ((event: MessageEvent) => void) | null = null;
+	#tokenRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 	/** Creates a browser authentication client for the provided Catalyst app. */
 	constructor(app?: unknown) {
 		this.requester = new Handler(app, this);
@@ -137,6 +138,15 @@ class Authentication implements Component {
 		// isUserAuthenticated() / signIn() / generateAuthToken() run — preventing
 		// URLs like /baas/v1/project/undefined/project-user/current in popup contexts.
 		await getCredentials();
+		// Refresh instance fields from ConfigStore after getCredentials() completes.
+		// The constructor reads ConfigStore before credentials are fetched, so fields
+		// like this.zaid and this.projectId are undefined at construction time in popup
+		// contexts where the fire-and-forget getCredentials() hasn't finished yet.
+		// Re-reading here ensures generateAuthToken() and other methods use the correct values.
+		this.zaid = ConfigStore.get('ZAID') as string;
+		this.projectId = ConfigStore.get('PROJECT_ID') as string;
+		this.isAppsail = ConfigStore.get('IS_APPSAIL') as string;
+		this.authProtocol = ConfigStore.get('AUTH_PROTOCOL') as unknown as Auth_Protocol;
 		//Only inside the iframe getOAuthTokenFromIDB will return a data.
 		const storedToken = await getOAuthTokenFromIDB().catch(() => null);
 		if (storedToken && storedToken.exp > Date.now()) {
@@ -757,10 +767,33 @@ class Authentication implements Component {
 	async #setTokenStorage(accessToken: string, expiresInSec: number): Promise<number> {
 		const expiresAt = Date.now() + expiresInSec * 1000;
 		await setOAuthTokenInIDB(accessToken, expiresAt);
+		// Schedule a proactive token refresh 5 minutes before expiry.
+		// Clears any existing timer first so only one refresh is ever pending.
+		if (this.#tokenRefreshTimer !== null) {
+			clearTimeout(this.#tokenRefreshTimer);
+			this.#tokenRefreshTimer = null;
+		}
+		const refreshInMs = (expiresInSec - 5 * 60) * 1000;
+		if (refreshInMs > 0) {
+			this.#tokenRefreshTimer = setTimeout(() => {
+				this.generateAuthToken('functions')
+					.then((token) => {
+						this.#setTokenStorage(token.access_token, token.expires_in_sec);
+					})
+					.catch(() => {
+						// Refresh failed — token will be invalid when it expires;
+						// the next call requiring auth will re-trigger the popup flow.
+					});
+			}, refreshInMs);
+		}
 		return expiresAt;
 	}
 
 	async #clearTokenStorage(): Promise<void> {
+		if (this.#tokenRefreshTimer !== null) {
+			clearTimeout(this.#tokenRefreshTimer);
+			this.#tokenRefreshTimer = null;
+		}
 		await clearOAuthTokenFromIDB();
 		clearStratusJwt();
 	}
