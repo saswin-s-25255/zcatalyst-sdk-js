@@ -191,6 +191,16 @@ class Authentication implements Component {
 	 * ```
 	 */
 	async signIn(id: string, config: ICatalystSignInConfig = {}): Promise<void> {
+		// Ensure credentials are loaded before using projectId/zaid.
+		// If init() was not called, or if the constructor's fire-and-forget
+		// getCredentials() hasn't finished yet, this guarantees they are ready.
+		if (!ConfigStore.get('INITIALIZED')) {
+			await getCredentials();
+			this.zaid = ConfigStore.get('ZAID') as string;
+			this.projectId = ConfigStore.get('PROJECT_ID') as string;
+			this.isAppsail = ConfigStore.get('IS_APPSAIL') as string;
+			this.authProtocol = ConfigStore.get('AUTH_PROTOCOL') as unknown as Auth_Protocol;
+		}
 		if (detectIframeContext()) {
 			await this.signInViaPopup({
 				width: config.popupWidth,
