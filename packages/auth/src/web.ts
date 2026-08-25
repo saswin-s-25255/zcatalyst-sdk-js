@@ -201,6 +201,14 @@ class Authentication implements Component {
 			this.isAppsail = ConfigStore.get('IS_APPSAIL') as string;
 			this.authProtocol = ConfigStore.get('AUTH_PROTOCOL') as unknown as Auth_Protocol;
 		}
+
+		// Default redirect target: use caller-provided URL or fall back to the
+		// current path so the user lands back where they were after sign-in.
+		const redirectTarget =
+			config.redirectUrl ??
+			config.serviceUrl ??
+			window.location.pathname + window.location.search;
+
 		if (detectIframeContext()) {
 			await this.signInViaPopup({
 				width: config.popupWidth,
@@ -208,14 +216,14 @@ class Authentication implements Component {
 				timeoutMs: config.popupTimeoutMs,
 				isHosted: config.isHosted
 			});
+			// After popup auth completes, redirect to the intended path.
+			window.location.href = redirectTarget;
 			return;
 		}
 		try {
 			const isValidUser = await this.#isValidUser();
 			if (isValidUser) {
-				window.location.href = this.#constructRedirectUrl(
-					config.redirectUrl ?? config.serviceUrl ?? ''
-				);
+				window.location.href = this.#constructRedirectUrl(redirectTarget);
 			} else {
 				await this.#notSignedIn(id, config);
 			}
