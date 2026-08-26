@@ -1058,6 +1058,68 @@ exports.responses = {
 		}
 	},
 
+	// Smartbrowz - Browser Grid
+	'/browser-grid': {
+		GET: {
+			statusCode: 200,
+			data: {
+				status: 'success',
+				data: [
+					{
+						id: '1234',
+						name: 'testGrid',
+						browser_version: { chrome: '120.0' },
+						config_type: 1,
+						endpoint_type: 1,
+						max_nodes_count: 5,
+						max_session_count: 10,
+						memory: 512
+					}
+				]
+			}
+		}
+	},
+	'/browser-grid/testGrid': {
+		GET: {
+			statusCode: 200,
+			data: {
+				status: 'success',
+				data: {
+					id: '1234',
+					name: 'testGrid',
+					browser_version: { chrome: '120.0' },
+					config_type: 1,
+					endpoint_type: 1,
+					max_nodes_count: 5,
+					max_session_count: 10,
+					memory: 512
+				}
+			}
+		}
+	},
+	'/browser-grid/testGrid/stats?data_to_fetch=live_stats': {
+		GET: {
+			statusCode: 200,
+			data: {
+				status: 'success',
+				data: {
+					node_count: 3,
+					session_count: 2,
+					session_queue_size: 0
+				}
+			}
+		}
+	},
+	'/browser-grid/testGrid/stop': {
+		POST: {
+			statusCode: 200,
+			data: {
+				status: 'success',
+				data: undefined
+			}
+		}
+	},
+
 	// Smartbrowz - Dataverse
 	'/dataverse/lead-enrichment': {
 		POST: {

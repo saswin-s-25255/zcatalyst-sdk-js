@@ -18,6 +18,7 @@ import { Readable } from 'stream';
 
 import pkg from '../package.json';
 const { version } = pkg;
+import { BrowserGrid } from './browser-grid';
 import { Dataverse } from './dataverse';
 import { CatalystSmartbrowzError } from './utils/error';
 import {
@@ -38,9 +39,11 @@ type ICatalystSmartbrowzTemplateOptions = ICatalystSmartbrowzTemplate &
 export class Smartbrowz implements Component {
 	readonly requester: Handler;
 	readonly #dataverse: Dataverse;
+	readonly #browserGrid: BrowserGrid;
 	constructor(app?: unknown) {
 		this.requester = new Handler(app, this);
 		this.#dataverse = new Dataverse({ requester: this.requester });
+		this.#browserGrid = new BrowserGrid({ requester: this.requester });
 	}
 
 	/**
@@ -226,5 +229,17 @@ export class Smartbrowz implements Component {
 		Dataverse['getSimilarCompanies']
 	> {
 		return this.#dataverse.getSimilarCompanies({ leadName, websiteUrl });
+	}
+
+	/**
+	 * Provides admin-only access to SmartBrowz Browser Grid management APIs.
+	 * @returns The BrowserGrid instance.
+	 * @example
+	 * ```ts
+	 * const grids = await smartbrowz.browserGrid().getGrid();
+	 * ```
+	 */
+	browserGrid(): BrowserGrid {
+		return this.#browserGrid;
 	}
 }
