@@ -19,6 +19,7 @@ export const CONSTANTS = {
 	COMPONENT: {
 		cache: 'Cache',
 		circuit: 'Circuit',
+		connections: 'Connections',
 		connector: 'Connector',
 		cron: 'Cron',
 		datastore: 'DataStore',
