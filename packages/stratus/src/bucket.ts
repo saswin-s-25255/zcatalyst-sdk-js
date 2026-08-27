@@ -55,13 +55,22 @@ export class Bucket {
 		this.#jwtAuth = new JWTAuthHandler(this);
 		if (typeof bucket === 'string') {
 			assertValidBucketName(bucket);
-			const suffix =
+			const environment =
 				typeof window === 'undefined'
-					? `${(this._requester.app?.config?.environment as string).toLowerCase()}${STRATUS_SUFFIX}`
-					: (window.__catalyst?.environment as string)?.toLowerCase() +
-						'' +
-						window.__catalyst?.stratus_suffix;
-			const bucketUrl = `https://${bucket}-${suffix}`;
+					? (this._requester.app?.config?.environment as string)?.toLowerCase()
+					: (window.__catalyst?.environment as string)?.toLowerCase();
+			const domainSuffix =
+				typeof window === 'undefined' ? STRATUS_SUFFIX : window.__catalyst?.stratus_suffix;
+			if (!domainSuffix) {
+				throw new CatalystStratusError(
+					'invalid-argument',
+					'Unable to resolve Stratus domain suffix for bucket URL construction.',
+					bucket
+				);
+			}
+			const suffix =
+				environment === 'development' ? `-development${domainSuffix}` : domainSuffix;
+			const bucketUrl = `https://${bucket}${suffix}`;
 			assertValidBucketUrl(bucketUrl, bucket, suffix);
 			this._bucketDetails = {
 				bucket_name: bucket,
