@@ -99,6 +99,40 @@ export class Datastore implements Component {
 	}
 
 	/**
+	 * Executes an OLAP (Online Analytical Processing) ZCQL query against the datastore.
+	 *
+	 * @param query - The ZCQL query string to execute in OLAP mode.
+	 * @returns A promise resolving to an array of table values.
+	 * @throws {@link CatalystDataStoreError} if the query string is empty or invalid.
+	 *
+	 * @example
+	 * const datastore = new Datastore();
+	 * const rows = await datastore.executeOLAPQuery(
+	 *   "SELECT * FROM Users WHERE status = 'active'"
+	 * );
+	 */
+	async executeOLAPQuery(query: string): Promise<Array<ICatalystZCQLResult>> {
+		await wrapValidatorsWithPromise(() => {
+			isNonEmptyString(query, 'query', true);
+		}, CatalystDataStoreError);
+		const request: IRequestConfig = {
+			method: REQ_METHOD.post,
+			path: '/query',
+			data: { query, OLAP: true },
+			type: RequestType.JSON,
+			expecting: ResponseType.JSON,
+			service: CatalystService.BAAS,
+			track: true,
+			user: CREDENTIAL_USER.user,
+			headers: {
+				[ACCEPT_HEADER.KEY]: ACCEPT_HEADER.ZCQL
+			}
+		};
+		const resp = await this.requester.send(request);
+		return resp.data.data as Array<ICatalystZCQLResult>;
+	}
+
+	/**
 	 * Executes a search query on the Catalyst search service over Datastore records.
 	 *
 	 * @param searchQuery - Search criteria containing the query and table columns to search within.
