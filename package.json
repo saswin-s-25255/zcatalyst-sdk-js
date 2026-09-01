@@ -57,14 +57,8 @@
   "lint-staged": {
     "**/*.{js,ts,jsx,tsx}": "eslint --fix"
   },
-  "packageManager": "pnpm",
+  "packageManager": "pnpm@11.24.0",
   "engines": {
     "node": ">=20"
-  },
-  "pnpm": {
-    "overrides": {
-      "typescript": "~5.8.3",
-      "js-yaml": ">=4.2.0"
-    }
   }
 }
