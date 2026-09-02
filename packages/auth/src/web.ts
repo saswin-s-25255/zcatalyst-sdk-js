@@ -151,6 +151,14 @@ class Authentication implements Component {
 		const storedToken = await getOAuthTokenFromIDB().catch(() => null);
 		if (storedToken && storedToken.exp > Date.now()) {
 			this.#setAuthProtocol(Auth_Protocol.OAuthTokenProtocol);
+			// Rehydrate the proactive refresh timer after a page reload.
+			// The timer is lost on every reload, so we recreate it here from
+			// the absolute expiry timestamp persisted in IndexedDB.
+			// Guard: if a timer is already running (e.g. init() called twice),
+			// do not overwrite it.
+			if (this.#tokenRefreshTimer === null) {
+				this.#scheduleTokenRefresh(storedToken.exp);
+			}
 		}
 	}
 
@@ -782,28 +790,36 @@ class Authentication implements Component {
 		ConfigStore.set('AUTH_PROTOCOL', protocol);
 	}
 
+	// Schedules a proactive token refresh from an absolute expiry timestamp.
+	// Works for both fresh tokens (#setTokenStorage) and rehydrated tokens
+	// recovered from IndexedDB after a page reload (init()).
+	// Uses Math.max(0, ...) so tokens with fewer than 5 minutes remaining
+	// are refreshed immediately on the next event-loop tick.
+	#scheduleTokenRefresh(expiresAt: number): void {
+		const FIVE_MINUTES_MS = 5 * 60 * 1000; //5 min
+		const refreshInMs = Math.max(0, expiresAt - Date.now() - FIVE_MINUTES_MS);
+		this.#tokenRefreshTimer = setTimeout(() => {
+			this.generateAuthToken('functions')
+				.then((token) => {
+					void this.#setTokenStorage(token.access_token, token.expires_in_sec);
+				})
+				.catch(() => {
+					// Refresh failed — token will be invalid when it expires;
+					// the next call requiring auth will re-trigger the popup flow.
+				});
+		}, refreshInMs);
+	}
+
 	async #setTokenStorage(accessToken: string, expiresInSec: number): Promise<number> {
 		const expiresAt = Date.now() + expiresInSec * 1000;
 		await setOAuthTokenInIDB(accessToken, expiresAt);
-		// Schedule a proactive token refresh 5 minutes before expiry.
-		// Clears any existing timer first so only one refresh is ever pending.
+		// Clear any existing timer so only one refresh is ever pending,
+		// then schedule the next proactive refresh via the shared helper.
 		if (this.#tokenRefreshTimer !== null) {
 			clearTimeout(this.#tokenRefreshTimer);
 			this.#tokenRefreshTimer = null;
 		}
-		const refreshInMs = (expiresInSec - 5 * 60) * 1000;
-		if (refreshInMs > 0) {
-			this.#tokenRefreshTimer = setTimeout(() => {
-				this.generateAuthToken('functions')
-					.then((token) => {
-						this.#setTokenStorage(token.access_token, token.expires_in_sec);
-					})
-					.catch(() => {
-						// Refresh failed — token will be invalid when it expires;
-						// the next call requiring auth will re-trigger the popup flow.
-					});
-			}, refreshInMs);
-		}
+		this.#scheduleTokenRefresh(expiresAt);
 		return expiresAt;
 	}
 
@@ -866,6 +882,18 @@ class Authentication implements Component {
 				if (event.origin !== window.location.origin || !event.data) {
 					return;
 				}
+				// Verify the message genuinely came from our popup window.
+				// Origin alone is not enough — any same-origin frame could
+				// send a forged POPUP_MSG_AUTH_ERROR and cancel the sign-in
+				// before the eventId check is reached.
+				if (event.source !== this.#popupAuthOperation.popup) {
+					return;
+				}
+				// Verify the eventId before acting on any message type,
+				// so no message type can bypass this correlation check.
+				if (event.data.eventId !== this.#popupAuthOperation.eventId) {
+					return;
+				}
 				if (event.data.type === POPUP_MSG_AUTH_ERROR) {
 					this.#clearPopupOperation('cancelled');
 					reject(
@@ -877,9 +905,6 @@ class Authentication implements Component {
 					return;
 				}
 				if (event.data.type !== POPUP_MSG_AUTH_TOKEN) {
-					return;
-				}
-				if (event.data.eventId !== this.#popupAuthOperation.eventId) {
 					return;
 				}
 
@@ -994,10 +1019,15 @@ class Authentication implements Component {
 			}, POPUP_DEFAULT_TIMEOUT_MS);
 
 			const onMessage = async (event: MessageEvent): Promise<void> => {
-				if (event.origin !== window.location.origin) {
+				if (event.origin !== window.location.origin || !event.data) {
 					return;
 				}
-				if (!event.data || event.data.type !== POPUP_MSG_SIGNOUT_DONE) {
+				// Verify the message came from our sign-out popup, not another
+				// same-origin frame that could forge a POPUP_MSG_SIGNOUT_DONE.
+				if (event.source !== popup) {
+					return;
+				}
+				if (event.data.type !== POPUP_MSG_SIGNOUT_DONE) {
 					return;
 				}
 				clearTimeout(timeoutHandle);
