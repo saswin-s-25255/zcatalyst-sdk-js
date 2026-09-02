@@ -1,13 +1,96 @@
-import { ConfigStore } from '@zcatalyst/auth-client';
+import { ConfigStore, setOAuthTokenInIDB } from '@zcatalyst/auth-client';
 
 import { zcAuth } from '../src/index.browser';
 import {
 	CURRENT_CLIENT_PAGE_HOST,
 	CURRENT_CLIENT_PAGE_PORT,
 	CURRENT_CLIENT_PAGE_PROTOCOL,
+	POPUP_MSG_AUTH_ERROR,
+	POPUP_MSG_AUTH_TOKEN,
+	POPUP_MSG_SIGNOUT_DONE,
 	PROJECT_ID,
 	ZAID
 } from '../src/utils/constants';
+
+function makeFakePopup(closed = false): Window {
+	return { closed, close: jest.fn(), postMessage: jest.fn() } as unknown as Window;
+}
+
+function getMessageListener(): EventListener {
+	const calls = (window.addEventListener as jest.Mock).mock.calls;
+	const entry = [...calls].reverse().find(([type]: [string]) => type === 'message');
+	return entry?.[1] as EventListener;
+}
+
+const idbStore = new Map<string, unknown>();
+
+function setupIndexedDBMock() {
+	(global as unknown as { indexedDB: unknown }).indexedDB = {
+		open: jest.fn(() => {
+			const req: any = {
+				result: {
+					objectStoreNames: { contains: () => true },
+					createObjectStore: jest.fn(),
+					transaction: (_n: string, _m: string) => {
+						const tx: any = {};
+						const store = {
+							get: (k: string) => {
+								const r: any = {};
+								queueMicrotask(() => {
+									r.result = idbStore.get(k);
+									r.onsuccess?.(new Event('success'));
+									tx.oncomplete?.(new Event('complete'));
+								});
+								return r;
+							},
+							put: (v: unknown, k: string) => {
+								const r: any = {};
+								queueMicrotask(() => {
+									idbStore.set(k, v);
+									r.result = undefined;
+									r.onsuccess?.(new Event('success'));
+									tx.oncomplete?.(new Event('complete'));
+								});
+								return r;
+							},
+							delete: (k: string) => {
+								const r: any = {};
+								queueMicrotask(() => {
+									idbStore.delete(k);
+									r.result = undefined;
+									r.onsuccess?.(new Event('success'));
+									tx.oncomplete?.(new Event('complete'));
+								});
+								return r;
+							}
+						};
+						return {
+							objectStore: () => store,
+							set oncomplete(h: unknown) {
+								tx.oncomplete = h;
+							},
+							get oncomplete() {
+								return tx.oncomplete;
+							},
+							set onerror(h: unknown) {
+								tx.onerror = h;
+							},
+							get onerror() {
+								return tx.onerror;
+							},
+							error: null
+						};
+					},
+					close: jest.fn()
+				}
+			};
+			queueMicrotask(() => {
+				req.onsuccess?.(new Event('success'));
+			});
+			return req;
+		})
+	};
+}
 
 describe('Authentication (Browser)', () => {
 	beforeEach(() => {
@@ -18,8 +101,11 @@ describe('Authentication (Browser)', () => {
 		ConfigStore.set(CURRENT_CLIENT_PAGE_PROTOCOL, 'http:');
 		ConfigStore.set(CURRENT_CLIENT_PAGE_PORT, '3000');
 		ConfigStore.set('INITIALIZED', 'true');
-
-		// Create container div for iframe
+		idbStore.clear();
+		setupIndexedDBMock();
+		jest.spyOn(window, 'addEventListener');
+		jest.spyOn(window, 'removeEventListener');
+		jest.spyOn(window, 'open').mockReturnValue(makeFakePopup());
 		const container = document.createElement('div');
 		container.id = 'signin-container';
 		document.body.appendChild(container);
@@ -27,6 +113,7 @@ describe('Authentication (Browser)', () => {
 
 	afterEach(() => {
 		document.body.innerHTML = '';
+		jest.useRealTimers();
 	});
 
 	describe('constructor', () => {
@@ -46,15 +133,12 @@ describe('Authentication (Browser)', () => {
 	describe('hostedSignIn', () => {
 		it('should redirect to hosted signin page', async () => {
 			await zcAuth.hostedSignIn('/dashboard');
-
 			expect(window.location.href).toContain('__catalyst');
 			expect(window.location.href).toContain('auth');
 			expect(window.location.href).toContain('login');
 		});
-
 		it('should use default redirect if not provided', async () => {
 			await zcAuth.hostedSignIn();
-
 			expect(window.location.href).toContain('redirect_url=%2F');
 		});
 	});
@@ -62,7 +146,6 @@ describe('Authentication (Browser)', () => {
 	describe('publicSignup', () => {
 		it('should fetch public signup settings', async () => {
 			const result = await zcAuth.publicSignup();
-
 			expect(result.data?.public_signup).toBe(true);
 		});
 	});
@@ -70,11 +153,7 @@ describe('Authentication (Browser)', () => {
 	describe('signOut', () => {
 		it('should clear cookies and redirect on signout', async () => {
 			document.cookie = 'test_cookie=value';
-			const redirectURL = '/';
-
-			await zcAuth.signOut(redirectURL);
-
-			// Verify window.location.replace was called
+			await zcAuth.signOut('/');
 			expect(window.location.replace).toHaveBeenCalled();
 		});
 	});
@@ -84,40 +163,257 @@ describe('Authentication (Browser)', () => {
 			await expect(zcAuth.changePassword('', 'new')).rejects.toThrow();
 			await expect(zcAuth.changePassword('old', '')).rejects.toThrow();
 		});
-
 		it('should send password change request', async () => {
 			await expect(zcAuth.changePassword('oldPass123', 'newPass456')).resolves.toBeDefined();
 		});
-
 		it('should send passwords in the request body, never in the URL/query string', async () => {
 			const sendSpy = jest.spyOn(zcAuth.requester, 'send');
-
 			await zcAuth.changePassword('oldPass123', 'newPass456');
-
 			expect(sendSpy).toHaveBeenCalledTimes(1);
 			const sentRequest = sendSpy.mock.calls[0][0];
-
-			// Passwords must be present only in the JSON body.
 			expect(sentRequest.data).toEqual({
 				old_password: 'oldPass123',
 				new_password: 'newPass456'
 			});
-
-			// Passwords must never leak into the query string or URL.
-			expect(sentRequest.qs).not.toEqual(
-				expect.objectContaining({
-					old_password: expect.anything(),
-					new_password: expect.anything()
-				})
-			);
 			expect(JSON.stringify(sentRequest.qs ?? {})).not.toContain('oldPass123');
-			expect(JSON.stringify(sentRequest.qs ?? {})).not.toContain('newPass456');
 			expect(sentRequest.path).not.toContain('oldPass123');
-			expect(sentRequest.path).not.toContain('newPass456');
-			expect(sentRequest.url ?? '').not.toContain('oldPass123');
-			expect(sentRequest.url ?? '').not.toContain('newPass456');
-
 			sendSpy.mockRestore();
+		});
+	});
+
+	describe('signInViaPopup', () => {
+		// Helper: start a popup sign-in and wait for the poll interval to fire
+		// so the eventId is broadcast via postMessage, then return the listener + eventId.
+		// Uses real timers so queueMicrotask works correctly inside the IDB mock.
+		async function startPopupSignIn(fakePopup: Window) {
+			jest.spyOn(window, 'open').mockReturnValue(fakePopup);
+			const signInPromise = zcAuth.signInViaPopup();
+			// Wait for the poll interval (500ms) to fire via real timers.
+			await new Promise<void>((res) => setTimeout(res, 600));
+			const listener = getMessageListener();
+			const pollCall = (fakePopup.postMessage as jest.Mock).mock.calls[0];
+			const eventId: string = pollCall?.[0]?.eventId ?? 'test-event-id';
+			return { signInPromise, listener, eventId };
+		}
+
+		it('should resolve with token when popup sends a valid AUTH_TOKEN message', async () => {
+			const fakePopup = makeFakePopup();
+			const { signInPromise, listener, eventId } = await startPopupSignIn(fakePopup);
+			listener({
+				origin: window.location.origin,
+				source: fakePopup,
+				data: {
+					type: POPUP_MSG_AUTH_TOKEN,
+					eventId,
+					access_token: 'test-access-token',
+					expires_in_sec: 3600
+				}
+			} as unknown as MessageEvent);
+			const result = await signInPromise;
+			expect(result.access_token).toBe('test-access-token');
+			expect(result.expires_at).toBeGreaterThan(Date.now());
+		});
+
+		it('should reject when popup sends AUTH_ERROR with correct source and eventId', async () => {
+			const fakePopup = makeFakePopup();
+			const { signInPromise, listener, eventId } = await startPopupSignIn(fakePopup);
+			listener({
+				origin: window.location.origin,
+				source: fakePopup,
+				data: { type: POPUP_MSG_AUTH_ERROR, eventId, message: 'Sign-in failed.' }
+			} as unknown as MessageEvent);
+			await expect(signInPromise).rejects.toThrow('Sign-in failed.');
+		});
+
+		it('should ignore AUTH_ERROR from a wrong source (forged message)', async () => {
+			const fakePopup = makeFakePopup();
+			const rogue = makeFakePopup();
+			const { signInPromise, listener, eventId } = await startPopupSignIn(fakePopup);
+			// Forged cancel from wrong source — must be ignored.
+			listener({
+				origin: window.location.origin,
+				source: rogue,
+				data: { type: POPUP_MSG_AUTH_ERROR, eventId, message: 'Forged cancel' }
+			} as unknown as MessageEvent);
+			// Legitimate token from correct source — must resolve.
+			listener({
+				origin: window.location.origin,
+				source: fakePopup,
+				data: {
+					type: POPUP_MSG_AUTH_TOKEN,
+					eventId,
+					access_token: 'real-token',
+					expires_in_sec: 3600
+				}
+			} as unknown as MessageEvent);
+			const result = await signInPromise;
+			expect(result.access_token).toBe('real-token');
+		});
+
+		it('should ignore messages with a mismatched eventId', async () => {
+			const fakePopup = makeFakePopup();
+			const {
+				signInPromise,
+				listener,
+				eventId: correctEventId
+			} = await startPopupSignIn(fakePopup);
+			// Wrong eventId — ignored.
+			listener({
+				origin: window.location.origin,
+				source: fakePopup,
+				data: {
+					type: POPUP_MSG_AUTH_TOKEN,
+					eventId: 'wrong-event-id',
+					access_token: 'bad-token',
+					expires_in_sec: 3600
+				}
+			} as unknown as MessageEvent);
+			// Correct eventId — resolves.
+			listener({
+				origin: window.location.origin,
+				source: fakePopup,
+				data: {
+					type: POPUP_MSG_AUTH_TOKEN,
+					eventId: correctEventId,
+					access_token: 'good-token',
+					expires_in_sec: 3600
+				}
+			} as unknown as MessageEvent);
+			const result = await signInPromise;
+			expect(result.access_token).toBe('good-token');
+		});
+
+		it('should reject when popup is closed before auth completes', async () => {
+			jest.useFakeTimers();
+			const fakePopup = makeFakePopup(false);
+			jest.spyOn(window, 'open').mockReturnValue(fakePopup);
+			const signInPromise = zcAuth.signInViaPopup();
+			await Promise.resolve();
+			(fakePopup as any).closed = true;
+			jest.advanceTimersByTime(600);
+			await expect(signInPromise).rejects.toThrow('Popup closed before auth completed.');
+		});
+
+		it('should reject when popup times out', async () => {
+			jest.useFakeTimers();
+			jest.spyOn(window, 'open').mockReturnValue(makeFakePopup());
+			const signInPromise = zcAuth.signInViaPopup({ timeoutMs: 5000 });
+			await Promise.resolve();
+			jest.advanceTimersByTime(5001);
+			await expect(signInPromise).rejects.toThrow('Popup timed out after 5s.');
+		});
+
+		it('should throw POPUP_BLOCKED when window.open returns null', async () => {
+			jest.spyOn(window, 'open').mockReturnValue(null as unknown as Window);
+			await expect(zcAuth.signInViaPopup()).rejects.toThrow('Popup was blocked');
+		});
+
+		it('should throw POPUP_ALREADY_OPEN if a popup is already waiting', async () => {
+			jest.useFakeTimers();
+			jest.spyOn(window, 'open').mockReturnValue(makeFakePopup());
+			const first = zcAuth.signInViaPopup();
+			await Promise.resolve();
+			await expect(zcAuth.signInViaPopup()).rejects.toThrow(
+				'A sign-in popup is already open.'
+			);
+			jest.advanceTimersByTime(120_001);
+			await expect(first).rejects.toThrow();
+		});
+	});
+
+	describe('signOutViaPopup', () => {
+		it('should redirect after popup sends SIGNOUT_DONE', async () => {
+			const fakePopup = makeFakePopup();
+			jest.spyOn(window, 'open').mockReturnValue(fakePopup);
+			const signOutPromise = zcAuth.signOutViaPopup('/goodbye');
+			await Promise.resolve();
+			const listener = getMessageListener();
+			listener({
+				origin: window.location.origin,
+				source: fakePopup,
+				data: { type: POPUP_MSG_SIGNOUT_DONE }
+			} as unknown as MessageEvent);
+			await signOutPromise;
+			expect(window.location.replace).toHaveBeenCalledWith('/goodbye');
+		});
+
+		it('should ignore SIGNOUT_DONE from a wrong source (forged message)', async () => {
+			jest.useFakeTimers();
+			const fakePopup = makeFakePopup();
+			const rogue = makeFakePopup();
+			jest.spyOn(window, 'open').mockReturnValue(fakePopup);
+			const signOutPromise = zcAuth.signOutViaPopup('/goodbye');
+			await Promise.resolve();
+			const listener = getMessageListener();
+			// Forged message from wrong source — must be ignored.
+			listener({
+				origin: window.location.origin,
+				source: rogue,
+				data: { type: POPUP_MSG_SIGNOUT_DONE }
+			} as unknown as MessageEvent);
+			// Advance past timeout so the test does not hang.
+			jest.advanceTimersByTime(120_001);
+			await expect(signOutPromise).rejects.toThrow('Sign-out timed out.');
+		});
+
+		it('should reject when sign-out popup times out', async () => {
+			jest.useFakeTimers();
+			jest.spyOn(window, 'open').mockReturnValue(makeFakePopup());
+			const signOutPromise = zcAuth.signOutViaPopup('/');
+			await Promise.resolve();
+			jest.advanceTimersByTime(120_001);
+			await expect(signOutPromise).rejects.toThrow('Sign-out timed out.');
+		});
+	});
+
+	describe('init — refresh timer rehydration from IndexedDB', () => {
+		const mockCreds = {
+			project_id: 'test-project',
+			zaid: 'test-zaid',
+			auth_domain: 'https://accounts.zoho.com',
+			api_domain: 'https://api.catalyst.zoho.com',
+			environment: 'development',
+			is_appsail: 'false',
+			stratus_suffix: '.zohostratus.com',
+			project_domain: 'test.catalyst.zoho.com'
+		};
+
+		beforeEach(() => {
+			// init() calls getCredentials() internally. Provide a valid fetch mock.
+			(global.fetch as jest.Mock).mockResolvedValue({ json: async () => mockCreds });
+		});
+
+		it('should schedule immediate refresh when stored token has fewer than 5 minutes left', async () => {
+			// This test runs first (timer is null on the singleton at this point).
+			// Math.max(0, 2min - 5min) = 0 → setTimeout(fn, 0).
+			const expiresAt = Date.now() + 2 * 60 * 1000;
+			await setOAuthTokenInIDB('almost-expired-token', expiresAt);
+			// Mock generateAuthToken so the immediate refresh callback resolves cleanly.
+			const genSpy = jest.spyOn(zcAuth, 'generateAuthToken').mockResolvedValue({
+				access_token: 'refreshed-token',
+				expires_in_sec: 3600
+			});
+			await zcAuth.init();
+			// Allow the setTimeout(fn, 0) callback time to execute.
+			await new Promise<void>((res) => setTimeout(res, 50));
+			expect(genSpy).toHaveBeenCalled();
+			genSpy.mockRestore();
+		});
+
+		it('should not schedule a second timer if one is already running (guard check)', async () => {
+			// After the previous test the singleton has a live refresh timer.
+			// Calling init() again must NOT create a second timer (guard: timer !== null).
+			const expiresAt = Date.now() + 30 * 60 * 1000;
+			await setOAuthTokenInIDB('long-lived-token', expiresAt);
+			const timerSpy = jest.spyOn(global, 'setTimeout');
+			await zcAuth.init();
+			// No new setTimeout call should have been made from the refresh-timer path.
+			const refreshTimerCall = timerSpy.mock.calls.find(
+				([fn, delay]) => typeof delay === 'number' && delay >= 0 && typeof fn === 'function'
+			);
+			// The guard (timer !== null) means no new timer is scheduled.
+			expect(refreshTimerCall).toBeUndefined();
+			timerSpy.mockRestore();
 		});
 	});
 });

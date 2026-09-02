@@ -101,18 +101,18 @@ describe('auth-client index', () => {
 	});
 
 	describe('getCredentials', () => {
-		it('should fetch and store credentials', async () => {
-			const mockCredentials = {
-				project_id: 'test-project',
-				zaid: 'test-zaid',
-				auth_domain: 'https://accounts.zoho.com',
-				api_domain: 'https://api.catalyst.zoho.com',
-				environment: 'development',
-				is_appsail: 'false',
-				stratus_suffix: '.zohostratus.com',
-				project_domain: 'test.catalyst.zoho.com'
-			};
+		const mockCredentials = {
+			project_id: 'test-project',
+			zaid: 'test-zaid',
+			auth_domain: 'https://accounts.zoho.com',
+			api_domain: 'https://api.catalyst.zoho.com',
+			environment: 'development',
+			is_appsail: 'false',
+			stratus_suffix: '.zohostratus.com',
+			project_domain: 'test.catalyst.zoho.com'
+		};
 
+		it('should fetch and store credentials', async () => {
 			(global.fetch as jest.Mock).mockResolvedValue({
 				json: async () => mockCredentials
 			});
@@ -152,6 +152,43 @@ describe('auth-client index', () => {
 			});
 
 			await expect(getCredentials()).rejects.toThrow();
+		});
+
+		it('should coalesce simultaneous calls — only one fetch fires', async () => {
+			// Simulate a slow fetch so both calls are in-flight at the same time.
+			let resolveFetch!: (value: unknown) => void;
+			const slowFetch = new Promise((resolve) => {
+				resolveFetch = resolve;
+			});
+			(global.fetch as jest.Mock).mockReturnValue(
+				slowFetch.then(() => ({ json: async () => mockCredentials }))
+			);
+
+			// Fire two calls concurrently — neither has resolved yet.
+			const p1 = getCredentials();
+			const p2 = getCredentials();
+
+			// Unblock the single fetch.
+			resolveFetch(undefined);
+			await Promise.all([p1, p2]);
+
+			// Only one network request must have been made.
+			expect(global.fetch).toHaveBeenCalledTimes(1);
+		});
+
+		it('should reset promise on failure so the next call retries', async () => {
+			// First call — fetch rejects.
+			(global.fetch as jest.Mock).mockRejectedValueOnce(new Error('network error'));
+			await expect(getCredentials()).rejects.toThrow();
+
+			// Second call — fetch succeeds.
+			(global.fetch as jest.Mock).mockResolvedValue({
+				json: async () => mockCredentials
+			});
+			await expect(getCredentials()).resolves.toBeUndefined();
+
+			// Two separate fetch calls must have been made (one failed, one succeeded).
+			expect(global.fetch).toHaveBeenCalledTimes(2);
 		});
 	});
 
