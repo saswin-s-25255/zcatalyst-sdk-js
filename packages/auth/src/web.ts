@@ -419,25 +419,32 @@ class Authentication implements Component {
 	 * ```
 	 */
 	async signOut(redirectURL = '/'): Promise<void> {
-		setDefaultProjectConfig();
 		const authProtocol = ConfigStore.get('AUTH_PROTOCOL') as unknown as Auth_Protocol;
 		this.authProtocol = authProtocol;
 		if (detectIframeContext()) {
 			await this.signOutViaPopup(redirectURL);
 			return;
 		}
+		// Fix 1 & 2 & 3: JWT — clear its own cookies with past expiry, reset config, redirect
 		if (authProtocol === Auth_Protocol.JwtTokenProtocol) {
-			document.cookie = `${JWT_COOKIE_PREFIX}=; path=/; expires=${new Date().toUTCString()};`;
-			document.cookie = `user_cred=; path=/; expires=${new Date().toUTCString()};`;
+			document.cookie = `${JWT_COOKIE_PREFIX}=; path=/; expires=${new Date(0).toUTCString()};`;
+			document.cookie = `user_cred=; path=/; expires=${new Date(0).toUTCString()};`;
 			clearStratusJwt();
-			// Force immediate redirect for JWT
+			setDefaultProjectConfig();
 			window.location.replace(redirectURL);
 			return;
 		}
+		// Fix 1 & 3: OAuth — only clear IDB token (no user_cred, no stratus_jwt), reset config, redirect
 		if (authProtocol === Auth_Protocol.OAuthTokenProtocol) {
 			await this.#clearTokenStorage();
-			document.cookie = `user_cred=; path=/; expires=${new Date().toUTCString()};`;
+			setDefaultProjectConfig();
+			window.location.replace(redirectURL);
+			return;
 		}
+		// ZcrfTokenProtocol — clear stratus_jwt, reset config, then hit Accounts logout
+		// Fix 3 & 4 & 5: clear stratus_jwt, reset config before Accounts redirect
+		clearStratusJwt();
+		setDefaultProjectConfig();
 		if (this.isAppsail === 'true') {
 			const validUser = await this.#isValidUser();
 			if (!validUser) {
@@ -457,16 +464,15 @@ class Authentication implements Component {
 					url: this.#constructSignOutUrl(redirectURL),
 					external: true
 				};
+				// The Accounts logout endpoint invalidates the CAUTH session cookie
+				// server-side — no client-side cookie deletion needed or possible
+				// (the server may set it HttpOnly, which blocks JS access).
 				await this.requester.send(request);
-				document.cookie = `CAUTH=; path=/accounts; expires=${new Date().toUTCString()};`;
-				// Use replace instead of href for immediate navigation
 				window.location.replace(redirectURL);
 			} catch {
-				// Use replace for error case too
 				window.location.replace(this.#constructSignOutUrl(redirectURL));
 			}
 		} else {
-			// Use replace instead of href for immediate navigation
 			window.location.replace(this.#constructSignOutUrl(redirectURL));
 		}
 	}
@@ -800,9 +806,7 @@ class Authentication implements Component {
 		const refreshInMs = Math.max(0, expiresAt - Date.now() - FIVE_MINUTES_MS);
 		this.#tokenRefreshTimer = setTimeout(() => {
 			this.generateAuthToken('functions')
-				.then((token) => {
-					void this.#setTokenStorage(token.access_token, token.expires_in_sec);
-				})
+				.then((token) => this.#setTokenStorage(token.access_token, token.expires_in_sec))
 				.catch(() => {
 					// Refresh failed — token will be invalid when it expires;
 					// the next call requiring auth will re-trigger the popup flow.
@@ -829,7 +833,6 @@ class Authentication implements Component {
 			this.#tokenRefreshTimer = null;
 		}
 		await clearOAuthTokenFromIDB();
-		clearStratusJwt();
 	}
 
 	#clearPopupOperation(status: IPopupAuthOperation['status'] = 'cancelled'): void {
@@ -951,12 +954,27 @@ class Authentication implements Component {
 			this.#popupMessageListener = onMessage;
 			window.addEventListener('message', onMessage);
 
-			const popup = openPopupWindow({
-				url: buildPopupLoginUrl(window.location.origin, eventId, isHosted),
-				name: 'catalystSignIn',
-				width,
-				height
-			});
+			let popup: Window;
+			try {
+				popup = openPopupWindow({
+					url: buildPopupLoginUrl(window.location.origin, eventId, isHosted),
+					name: 'catalystSignIn',
+					width,
+					height
+				});
+			} catch (err) {
+				// Popup was blocked or failed to open — clean up the listener
+				// before rejecting so it is not left installed indefinitely.
+				window.removeEventListener('message', onMessage);
+				this.#popupMessageListener = null;
+				reject(
+					new CatalystAuthenticationError(
+						'POPUP_BLOCKED',
+						err instanceof Error ? err.message : 'Popup window could not be opened.'
+					)
+				);
+				return;
+			}
 			this.#popupAuthOperation = { eventId, status: 'waiting', popup, createdAt: Date.now() };
 
 			this.#popupPollInterval = setInterval(() => {
@@ -1040,7 +1058,6 @@ class Authentication implements Component {
 					// ignore close errors
 				}
 				await this.#clearTokenStorage();
-				document.cookie = `user_cred=; max-age=0; path=/`;
 				if (redirectUrl) {
 					window.location.replace(redirectUrl);
 				}

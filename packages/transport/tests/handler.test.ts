@@ -1,4 +1,5 @@
 import { Auth_Protocol, ConfigStore } from '@zcatalyst/auth-client';
+import { CatalystService } from '@zcatalyst/utils';
 
 import { Handler } from '../src';
 import { ResponseHandler } from '../src/fetch-handler';
@@ -275,6 +276,149 @@ describe('Handler', () => {
 			});
 
 			expect(wrapped.data).toBe('');
+		});
+	});
+
+	describe('request pipeline — origin override', () => {
+		let fetchSpy: jest.SpyInstance;
+
+		beforeEach(() => {
+			fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+				new Response(JSON.stringify({ status: 'success' }), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' }
+				})
+			);
+			// Set a project ID so the path builder does not throw
+			ConfigStore.set('PROJECT_ID', '12345');
+			// Use ZcrfTokenProtocol so attachZCAuthHeaders is a no-op (no CSRF fetch needed)
+			ConfigStore.set('AUTH_PROTOCOL', Auth_Protocol.ZcrfTokenProtocol);
+			ConfigStore.set('CSRF_TOKEN', 'test-csrf');
+			// Suppress the CSRF collectZCRFToken network call
+			jest.spyOn(ResponseHandler as any, 'attachZCAuthHeaders').mockResolvedValue({});
+		});
+
+		afterEach(() => {
+			jest.restoreAllMocks();
+		});
+
+		it('should use origin override instead of apiDomain when origin is set', async () => {
+			const request: IRequestConfig = {
+				method: 'GET',
+				path: '/test-resource',
+				service: CatalystService.BAAS,
+				origin: 'https://custom-origin.example.com'
+			};
+
+			await ResponseHandler.send(request);
+
+			const calledUrl = fetchSpy.mock.calls[0][0] as string;
+			expect(calledUrl).toContain('https://custom-origin.example.com');
+		});
+
+		it('should not include X-Catalyst-User-Agent header for EXTERNAL service requests', async () => {
+			const request: IRequestConfig = {
+				method: 'GET',
+				url: 'https://external-service.example.com/api',
+				service: CatalystService.EXTERNAL
+			};
+
+			await ResponseHandler.send(request);
+
+			const calledOptions = fetchSpy.mock.calls[0][1] as RequestInit;
+			const headers = calledOptions.headers as Record<string, string>;
+			expect(headers?.['X-Catalyst-User-Agent']).toBeUndefined();
+		});
+
+		it('should include X-Catalyst-User-Agent header for internal (non-EXTERNAL) service requests', async () => {
+			const request: IRequestConfig = {
+				method: 'GET',
+				path: '/test-resource',
+				service: CatalystService.BAAS,
+				origin: 'https://api.catalyst.example.com'
+			};
+
+			await ResponseHandler.send(request);
+
+			const calledOptions = fetchSpy.mock.calls[0][1] as RequestInit;
+			const headers = calledOptions.headers as Record<string, string>;
+			expect(headers?.['X-Catalyst-User-Agent']).toBeDefined();
+		});
+	});
+
+	describe('request pipeline — auth: false', () => {
+		let fetchSpy: jest.SpyInstance;
+
+		beforeEach(() => {
+			fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+				new Response(JSON.stringify({ status: 'success' }), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' }
+				})
+			);
+			ConfigStore.set('PROJECT_ID', '12345');
+			jest.spyOn(ResponseHandler as any, 'attachZCAuthHeaders').mockResolvedValue({});
+		});
+
+		afterEach(() => {
+			jest.restoreAllMocks();
+		});
+
+		it('should omit credentials when auth is false', async () => {
+			const request: IRequestConfig = {
+				method: 'GET',
+				url: 'https://external-service.example.com/api',
+				service: CatalystService.EXTERNAL,
+				auth: false
+			};
+
+			await ResponseHandler.send(request);
+
+			const calledOptions = fetchSpy.mock.calls[0][1] as RequestInit;
+			expect(calledOptions.credentials).toBe('omit');
+		});
+
+		it('should include credentials when auth is true', async () => {
+			const request: IRequestConfig = {
+				method: 'GET',
+				url: 'https://external-service.example.com/api',
+				service: CatalystService.EXTERNAL,
+				auth: true
+			};
+
+			await ResponseHandler.send(request);
+
+			const calledOptions = fetchSpy.mock.calls[0][1] as RequestInit;
+			expect(calledOptions.credentials).toBe('include');
+		});
+
+		it('should not call attachZCAuthHeaders when auth is false', async () => {
+			const attachSpy = jest.spyOn(ResponseHandler, 'attachZCAuthHeaders');
+
+			const request: IRequestConfig = {
+				method: 'GET',
+				url: 'https://external-service.example.com/api',
+				service: CatalystService.EXTERNAL,
+				auth: false
+			};
+
+			await ResponseHandler.send(request);
+
+			expect(attachSpy).not.toHaveBeenCalled();
+		});
+
+		it('should default auth to true when auth is not specified', async () => {
+			const request: IRequestConfig = {
+				method: 'GET',
+				url: 'https://external-service.example.com/api',
+				service: CatalystService.EXTERNAL
+			};
+
+			await ResponseHandler.send(request);
+
+			const calledOptions = fetchSpy.mock.calls[0][1] as RequestInit;
+			// auth defaults to true → credentials should be 'include'
+			expect(calledOptions.credentials).toBe('include');
 		});
 	});
 });
