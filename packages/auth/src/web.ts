@@ -26,18 +26,18 @@ import {
 	FETCH_DETAILS_CALLBACK_FN,
 	UM_URL_DIVIDER,
 	URL_DIVIDER
-} from './utils/constants';
-import { Auth_Protocol } from './utils/enums';
-import { CatalystAuthenticationError } from './utils/error';
-import { wrapCheck } from './utils/functions';
+} from './utils/constants.js';
+import { Auth_Protocol } from './utils/enums.js';
+import { CatalystAuthenticationError } from './utils/error.js';
+import { wrapCheck } from './utils/functions.js';
 import {
 	ICatalystAuthResponse,
 	ICatalystCustomTokenResponse,
 	ICatalystSignInConfig,
 	ICatalystSignUpConfig,
 	UserDetails
-} from './utils/interface';
-import { applyQueryString, hasSuffInfo } from './utils/validators';
+} from './utils/interface.js';
+import { applyQueryString, hasSuffInfo } from './utils/validators.js';
 
 const { CREDENTIAL_USER, REQ_METHOD, COMPONENT } = CONSTANTS;
 
@@ -757,8 +757,8 @@ class Authentication implements Component {
 	}
 }
 
-export { UserManagement } from './user-management';
-export * from './utils/constants';
+export { UserManagement } from './user-management.js';
+export * from './utils/constants.js';
 
 export const zcAuth = new Authentication();
 

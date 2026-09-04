@@ -1,4 +1,4 @@
-import { envOverride } from './helpers';
+import { envOverride } from './helpers.js';
 
 // move constants local to the package
 export const CONSTANTS = {
