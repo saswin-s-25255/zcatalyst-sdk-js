@@ -525,8 +525,8 @@ class Authentication implements Component {
 			const token: TokenResponse = await this.#tokenManager.generateAuthToken(
 				config.feature ?? 'functions'
 			);
-			accessToken = accessToken ?? token.access_token;
-			expiresInSec = expiresInSec ?? token.expires_in_sec;
+			accessToken = token.access_token;
+			expiresInSec = token.expires_in_sec;
 		}
 
 		postAuthTokenToParent({
@@ -570,7 +570,9 @@ class Authentication implements Component {
 		) {
 			redirectUrl = `${window.location.origin}${redirectUrl}`;
 		}
-		return redirectUrl ? `${baseRedirectUrl}&service_url=${redirectUrl}` : baseRedirectUrl;
+		return redirectUrl
+			? `${baseRedirectUrl}&service_url=${encodeURIComponent(redirectUrl)}`
+			: baseRedirectUrl;
 	}
 
 	#constructSignOutUrl(redirectURL: string): string {

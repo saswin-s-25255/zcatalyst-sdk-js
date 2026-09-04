@@ -384,34 +384,47 @@ describe('Authentication (Browser)', () => {
 		});
 
 		it('should schedule immediate refresh when stored token has fewer than 5 minutes left', async () => {
-			// This test runs first (timer is null on the singleton at this point).
-			// Math.max(0, 2min - 5min) = 0 → setTimeout(fn, 0).
+			// Math.max(0, 2min - 5min) = 0 → setTimeout(fn, 0), fires immediately.
 			const expiresAt = Date.now() + 2 * 60 * 1000;
 			await setOAuthTokenInIDB('almost-expired-token', expiresAt);
-			// Mock generateAuthToken so the immediate refresh callback resolves cleanly.
-			const genSpy = jest.spyOn(zcAuth, 'generateAuthToken').mockResolvedValue({
-				access_token: 'refreshed-token',
-				expires_in_sec: 3600
-			});
+
+			// The refresh timer calls TokenManager.generateAuthToken() directly on
+			// the private #tokenManager instance — NOT on the public zcAuth wrapper.
+			// Spying on zcAuth.requester.send (the shared Handler both objects use)
+			// is the correct interception point.
+			const sendSpy = jest
+				.spyOn(zcAuth.requester, 'send')
+				.mockResolvedValue({ data: { data: null } } as any);
+
 			await zcAuth.init();
-			// Allow the setTimeout(fn, 0) callback time to execute.
+			// Allow the setTimeout(fn, 0) callback to execute.
 			await new Promise<void>((res) => setTimeout(res, 50));
-			expect(genSpy).toHaveBeenCalled();
-			genSpy.mockRestore();
+
+			expect(sendSpy).toHaveBeenCalled();
+			sendSpy.mockRestore();
 		});
 
 		it('should not schedule a second timer if one is already running (guard check)', async () => {
-			// After the previous test the singleton has a live refresh timer.
-			// Calling init() again must NOT create a second timer (guard: timer !== null).
+			// Seed a token with 30 min left → refresh delay ≈ 25 min.
 			const expiresAt = Date.now() + 30 * 60 * 1000;
 			await setOAuthTokenInIDB('long-lived-token', expiresAt);
+
+			// First init — schedules the timer (guard releases only when it fires).
+			await zcAuth.init();
+
+			// Second init — guard must prevent a second setTimeout for the refresh.
 			const timerSpy = jest.spyOn(global, 'setTimeout');
 			await zcAuth.init();
-			// No new setTimeout call should have been made from the refresh-timer path.
+
+			// Only look for setTimeout calls with a delay in the ~25 min refresh range.
+			// This filters out unrelated calls (IDB microtasks, Jest internals, etc.).
+			const TWENTY_FIVE_MIN = 25 * 60 * 1000;
 			const refreshTimerCall = timerSpy.mock.calls.find(
-				([fn, delay]) => typeof delay === 'number' && delay >= 0 && typeof fn === 'function'
+				([fn, delay]) =>
+					typeof fn === 'function' &&
+					typeof delay === 'number' &&
+					delay >= TWENTY_FIVE_MIN - 5_000
 			);
-			// The guard (timer !== null) means no new timer is scheduled.
 			expect(refreshTimerCall).toBeUndefined();
 			timerSpy.mockRestore();
 		});

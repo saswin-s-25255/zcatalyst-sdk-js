@@ -34,6 +34,12 @@ export class TokenManager {
 	async generateAuthToken(
 		feature: 'functions' | 'stratus' = 'functions'
 	): Promise<TokenResponse> {
+		if (feature !== 'functions' && feature !== 'stratus') {
+			throw new CatalystAuthenticationError(
+				'INVALID_ARGUMENT',
+				"'feature' must be either 'functions' or 'stratus'."
+			);
+		}
 		const customTokenRequest: IRequestConfig = {
 			method: REQ_METHOD.get,
 			path: '/authentication/custom-token',
@@ -129,9 +135,17 @@ export class TokenManager {
 	 * @param expiresAt - Absolute expiry timestamp in milliseconds.
 	 */
 	scheduleTokenRefresh(expiresAt: number): void {
+		// Guard: if a timer is already running do not create a second one.
+		// Repeated init() calls must not stack parallel refresh cycles.
+		if (this.#tokenRefreshTimer !== null) {
+			return;
+		}
 		const FIVE_MINUTES_MS = 5 * 60 * 1000;
 		const refreshInMs = Math.max(0, expiresAt - Date.now() - FIVE_MINUTES_MS);
 		this.#tokenRefreshTimer = setTimeout(() => {
+			// Clear the handle before async work begins so the guard is
+			// released — allowing setTokenStorage() to schedule the next cycle.
+			this.#tokenRefreshTimer = null;
 			this.generateAuthToken('functions')
 				.then((token) => this.setTokenStorage(token.access_token, token.expires_in_sec))
 				.catch(() => {
