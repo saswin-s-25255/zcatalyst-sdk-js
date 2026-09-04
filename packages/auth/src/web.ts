@@ -180,14 +180,16 @@ class Authentication implements Component {
 	 */
 	async signIn(id: string, config: ICatalystSignInConfig = {}): Promise<void> {
 		// Ensure credentials are loaded before using projectId/zaid.
-		if (!ConfigStore.get('INITIALIZED')) {
+		if (ConfigStore.get('INITIALIZED') !== 'true') {
 			await getCredentials();
-			this.zaid = ConfigStore.get('ZAID') as string;
-			this.projectId = ConfigStore.get('PROJECT_ID') as string;
-			this.isAppsail = ConfigStore.get('IS_APPSAIL') as string;
-			this.authProtocol = ConfigStore.get('AUTH_PROTOCOL') as unknown as Auth_Protocol;
-			this.#iframeSignIn.updateConfig(this.zaid, this.projectId);
 		}
+		// Always resync instance fields from ConfigStore — whether credentials
+		// were just fetched above or were already loaded by a prior init() call.
+		this.zaid = ConfigStore.get('ZAID') as string;
+		this.projectId = ConfigStore.get('PROJECT_ID') as string;
+		this.isAppsail = ConfigStore.get('IS_APPSAIL') as string;
+		this.authProtocol = ConfigStore.get('AUTH_PROTOCOL') as unknown as Auth_Protocol;
+		this.#iframeSignIn.updateConfig(this.zaid, this.projectId);
 
 		// Default redirect target: use caller-provided URL or fall back to the
 		// current path so the user lands back where they were after sign-in.
@@ -596,8 +598,8 @@ class Authentication implements Component {
 	}
 }
 
-export { isIframeContext } from './utils/browser.js';
 export { UserManagement } from './user-management.js';
+export { isIframeContext } from './utils/browser.js';
 export * from './utils/constants.js';
 
 export const zcAuth = new Authentication();
