@@ -33,10 +33,10 @@ import {
 	POPUP_MSG_SIGNOUT_DONE,
 	UM_URL_DIVIDER,
 	URL_DIVIDER
-} from './utils/constants';
-import { Auth_Protocol } from './utils/enums';
-import { CatalystAuthenticationError } from './utils/error';
-import { wrapCheck } from './utils/functions';
+} from './utils/constants.js';
+import { Auth_Protocol } from './utils/enums.js';
+import { CatalystAuthenticationError } from './utils/error.js';
+import { wrapCheck } from './utils/functions.js';
 import {
 	ICatalystAuthResponse,
 	ICatalystDeliverAuthTokenConfig,
@@ -596,9 +596,9 @@ class Authentication implements Component {
 	}
 }
 
-export { UserManagement } from './user-management';
-export { isIframeContext } from './utils/browser';
-export * from './utils/constants';
+export { isIframeContext } from './utils/browser.js';
+export { UserManagement } from './user-management.js';
+export * from './utils/constants.js';
 
 export const zcAuth = new Authentication();
 

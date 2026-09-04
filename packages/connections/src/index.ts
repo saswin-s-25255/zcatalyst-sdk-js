@@ -11,8 +11,8 @@ import {
 
 import pkg from '../package.json';
 const { version } = pkg;
-import { CatalystConnectionsError } from './utils/error';
-import { ICatalystConnectionsResponse } from './utils/interface';
+import { CatalystConnectionsError } from './utils/error.js';
+import { ICatalystConnectionsResponse } from './utils/interface.js';
 
 const { REQ_METHOD, COMPONENT, CREDENTIAL_USER } = CONSTANTS;
 
@@ -77,4 +77,4 @@ export class Connections implements Component {
 	}
 }
 
-export * from './utils/interface';
+export * from './utils/interface.js';

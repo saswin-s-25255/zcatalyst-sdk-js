@@ -13,9 +13,9 @@ import {
 
 import pkg from '../package.json';
 const { version } = pkg;
-import { Table, TableAdmin } from './table';
-import { CatalystDataStoreError } from './utils/error';
-import { ICatalystSearch, ICatalystTable } from './utils/interface';
+import { Table, TableAdmin } from './table.js';
+import { CatalystDataStoreError } from './utils/error.js';
+import { ICatalystSearch, ICatalystTable } from './utils/interface.js';
 
 const { REQ_METHOD, CREDENTIAL_USER, COMPONENT, ACCEPT_HEADER } = CONSTANTS;
 
