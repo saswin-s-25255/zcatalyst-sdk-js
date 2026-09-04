@@ -35,14 +35,22 @@ function withStore<T>(
 				const store = transaction.objectStore(IDB_DB_NAME);
 				const request = handler(store);
 
-				request.onsuccess = () => resolve(request.result);
+				let result!: T;
+				request.onsuccess = () => {
+					result = request.result;
+				};
 				request.onerror = () =>
 					reject(request.error ?? new Error('IndexedDB request failed.'));
-				transaction.oncomplete = () => db.close();
-				transaction.onerror = () => {
+				transaction.oncomplete = () => {
+					db.close();
+					resolve(result);
+				};
+				const rejectTransaction = () => {
 					db.close();
 					reject(transaction.error ?? new Error('IndexedDB transaction failed.'));
 				};
+				transaction.onerror = rejectTransaction;
+				transaction.onabort = rejectTransaction;
 			})
 	);
 }
