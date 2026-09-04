@@ -311,11 +311,20 @@ export class PopupManager {
 				} catch {
 					// ignore close errors
 				}
-				await this.#tokenManager.clearTokenStorage();
-				if (redirectUrl) {
-					window.location.replace(redirectUrl);
+				try {
+					await this.#tokenManager.clearTokenStorage();
+					if (redirectUrl) {
+						window.location.replace(redirectUrl);
+					}
+					resolve();
+				} catch (err) {
+					reject(
+						new CatalystAuthenticationError(
+							'POST_AUTH_ERROR',
+							err instanceof Error ? err.message : String(err)
+						)
+					);
 				}
-				resolve();
 			};
 
 			window.addEventListener('message', onMessage);
