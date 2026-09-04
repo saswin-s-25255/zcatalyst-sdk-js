@@ -18,9 +18,7 @@ import {
 
 import pkg from '../package.json';
 const { version } = pkg;
-import { IframeSignInManager } from './internal/iframe-signin';
-import { PopupManager } from './internal/popup-manager';
-import { TokenManager } from './internal/token-manager';
+import { IframeSignInManager, PopupManager, TokenManager } from './internal';
 import { isIframeContext as detectIframeContext } from './utils/browser';
 import {
 	CURRENT_CLIENT_PAGE_HOST,
