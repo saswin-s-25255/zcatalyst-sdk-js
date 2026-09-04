@@ -165,3 +165,8 @@ export interface ICatalystSignUpConfig {
 	last_name: string;
 	email_id: string;
 }
+
+export type TokenResponse = {
+	expires_in_sec: number;
+	access_token: string;
+};
